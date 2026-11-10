@@ -1,0 +1,11 @@
+packages:
+  - .
+supportedArchitectures:
+  os: [current, win32, darwin]
+  cpu: [x64, arm64]
+  libc: [current]
+allowBuilds:
+  electron: false
+  esbuild: false
+  fs-native-extensions: false
+  node-gyp-build: false

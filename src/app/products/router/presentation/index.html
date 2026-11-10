@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+  <title>Provider Router</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <div class="settings-shell">
+    <aside class="sidebar" aria-label="Settings navigation">
+      <a class="app-identity" href="#providers" aria-label="Provider Router settings">
+        <span class="app-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M7 7h10v10H7zM3 7h4m10 0h4M3 17h4m10 0h4M7 3v4m10-4v4M7 17v4m10-4v4"/></svg></span>
+        <span>Provider Router</span>
+      </a>
+      <div class="sidebar-section-label">Settings</div>
+      <nav class="sidebar-nav">
+        <a href="#providers"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></svg><span>Providers</span></a>
+        <a href="#applications"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Applications</span></a>
+        <a href="#api-access"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 18"/></svg><span>API access</span></a>
+      </nav>
+
+    </aside>
+    <div class="settings-workspace">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>Settings</span><span class="breadcrumb-divider">/</span><strong id="breadcrumb-page">Providers</strong></div>
+        <div class="toolbar-actions"><button id="refresh" type="button" class="icon-label"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5m10.2-4a8 8 0 0 0-13.6-3L4 7m16 10-1.6 2A8 8 0 0 1 4.8 16"/></svg>Refresh</button><button id="updates" type="button">Check for updates</button></div>
+      </header>
+      <main class="settings-content">
+        <div class="page-heading"><h1 id="page-title">Providers</h1></div>
+        <div id="status" class="status-message" role="status" aria-live="polite"></div>
+        <section id="providers" aria-labelledby="providers-title">
+          <div class="section-heading"><div><h2 id="providers-title">Providers <button id="add-provider" class="icon-button" type="button" aria-label="Add provider">+</button></h2><p>Connect your accounts and choose the models available to applications.</p></div><span class="badge">This device</span></div>
+          <div class="provider-panel"><div id="connections" class="provider-list" aria-label="Provider connections"></div><div id="provider-detail" class="provider-detail"></div></div>
+        </section>
+        <section hidden id="applications" aria-labelledby="applications-title">
+          <div class="section-heading"><h2 id="applications-title">Applications</h2></div>
+
+          <div id="clients" class="client-list"></div>
+          <form id="add-client"><label>Name<input name="name" required maxlength="100" placeholder="My application" autocomplete="off"></label><div class="inline-form-action"><button type="submit">Create client key</button></div></form>
+          <div id="new-key" hidden><div class="key-heading"><strong>Client key</strong></div><p>Copy this key now. It is shown once.</p><input id="client-token" readonly aria-label="New client key"><button id="dismiss-key" type="button">Done</button></div>
+        </section>
+        <section hidden id="api-access" aria-labelledby="api-access-title">
+          <div class="section-heading"><h2 id="api-access-title">API access</h2></div>
+          <p id="endpoint" class="endpoint-label"></p>
+          <form id="network">
+            <label>Listener host<input name="host" required spellcheck="false"></label><label>Port<input type="number" min="1" max="65535" name="port" required></label>
+            <details class="advanced-settings full-width"><summary>Remote access</summary><div class="form-grid">
+              <label class="check full-width"><input type="checkbox" name="remote_enabled"><span>Enable remote access</span></label>
+              <label class="check full-width"><input type="checkbox" name="trusted_proxy"><span>Use a TLS reverse proxy</span></label>
+              <label class="full-width">Public endpoint<input name="public_endpoint" placeholder="https://providers.example.com" spellcheck="false"></label>
+              <details class="advanced-settings full-width"><summary>Direct TLS</summary><div class="form-grid"><label>Certificate<input name="tls_certificate" spellcheck="false"></label><label>Private key<input name="tls_key" spellcheck="false"></label></div></details>
+            </div></details>
+            <div class="form-actions full-width"><button type="submit">Save</button></div>
+          </form>
+        </section>
+
+      </main>
+    </div>
+  </div>
+  <dialog id="provider-dialog" aria-labelledby="dialog-title"><div class="dialog-heading"><div><h2 id="dialog-title">Add provider</h2><p>Choose how to connect your account.</p></div><button id="close-provider" type="button" aria-label="Close dialog">×</button></div><div id="dialog-status" class="status-message" role="alert"></div>
+          <form id="add-connection">
+            <label>Name<input name="name" required maxlength="100" placeholder="Personal Codex" autocomplete="off"></label>
+            <label>Provider<select name="method"><option value="codex_cli">Codex · installed CLI login</option><option value="codex_http">Codex · direct subscription HTTP</option><option value="openrouter_http">OpenRouter · API key</option></select></label>
+            <label id="codex-environment-field" hidden>Environment<select name="environment"><option value="native">Windows</option><option value="wsl">WSL</option></select></label>
+            <label id="wsl-distribution-field" hidden>Distribution<select name="wsl_distribution"></select></label>
+            <label id="api-key-field" class="full-width">API key<input type="password" name="api_key" autocomplete="off" placeholder="OpenRouter key"></label>
+            <details id="codex-advanced-field" class="advanced-settings full-width"><summary>Advanced</summary><div class="form-grid"><label>Codex home<input name="codex_home" placeholder="Installed Codex default" autocomplete="off"></label><label>Codex executable<input name="executable" placeholder="codex" autocomplete="off"></label></div></details>
+            <div class="form-actions full-width"><button type="submit" class="primary">Add provider</button></div>
+          </form>
+  </dialog>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title"><h2 id="confirm-title">Remove provider?</h2><p id="confirm-description"></p><div class="actions dialog-actions"><button id="cancel-confirm" type="button">Cancel</button><button id="accept-confirm" class="danger" type="button">Remove</button></div></dialog>
+  <script src="settings.js"></script>
+</body>
+</html>
