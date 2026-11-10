@@ -16,14 +16,14 @@ const cipher: SecretCipher = { encrypt: (value: string): Buffer => Buffer.from(`
 // RevExt: 2
 afterEach(async (): Promise<void> => { await Promise.all(listeners.splice(0).map((item: ListeningRouter): Promise<void> => item.close())); await Promise.all(directories.splice(0).map((directory: string): Promise<void> => rm(directory, { recursive: true, force: true }))); });
 // RevExt: 3
-async function fixture(infer?: ProviderAdapter['infer'], requireApiKey: boolean = true): Promise<{ store: RouterStore; listener: ListeningRouter; token: string; client_id: string; connection: Connection; directory: string }> {
+async function fixture(infer?: ProviderAdapter['infer'], requireApiKey: boolean = true, browserOrigins: string[] = []): Promise<{ store: RouterStore; listener: ListeningRouter; token: string; client_id: string; connection: Connection; directory: string }> {
   const directory: string = await mkdtemp(path.join(os.tmpdir(), 'router-test-')); directories.push(directory);
   const store: RouterStore = await RouterStore.open(directory, cipher);
   const connection: Connection = { id: uuid7(), name: 'Personal subscription', method: 'codex_cli', exposed: true, models: [model] };
   await store.saveConnection(connection, 'upstream-secret');
   const client: { id: string; token: string } = await store.createClient('Example application');
   const adapter: ProviderAdapter = { models: async (): Promise<Model[]> => [model], infer: infer || (async (request: InferenceRequest): Promise<InferenceResult> => ({ request_id: request.request_id, content: '{"answer":42}', tool_calls: [], usage: { input_tokens: 20, output_tokens: 8 }, provider: 'codex', method: 'codex_cli', model: request.model, reasoning_effort: request.reasoning_effort })) };
-  const listener: ListeningRouter = await startRouter(store, { codex_cli: adapter, codex_http: adapter, openrouter_http: adapter }, { host: '127.0.0.1', port: 0, remote_enabled: false, trusted_proxy: false, require_api_key: requireApiKey }, '0.1.0'); listeners.push(listener);
+  const listener: ListeningRouter = await startRouter(store, { codex_cli: adapter, codex_http: adapter, openrouter_http: adapter }, { host: '127.0.0.1', port: 0, remote_enabled: false, trusted_proxy: false, require_api_key: requireApiKey, browser_origins: browserOrigins }, '0.1.0'); listeners.push(listener);
   return { store, listener, token: client.token, client_id: client.id, connection, directory };
 }
 // RevExt: 4
@@ -31,6 +31,54 @@ function request(connection: Connection): InferenceRequest { return { request_id
 async function post(endpoint: string, token: string, payload: unknown): Promise<Response> { return fetch(`${endpoint}/v1/inference`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
 // RevExt: 5
 describe('Provider Router API', (): void => {
+  it('allows approved browser origins through preflight and inference without a key, and keeps errors readable', async (): Promise<void> => {
+    const origin: string = 'https://attalid.example';  // RevExt: 37
+    const { listener, connection } = await fixture(undefined, false, [origin]);
+    const preflight: Response = await fetch(`${listener.endpoint}/v1/inference`, { method: 'OPTIONS', headers: { Origin: origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type, authorization, x-request-id' } });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('access-control-allow-origin')).toBe(origin);
+    expect(preflight.headers.get('access-control-allow-headers')).toContain('authorization');
+    const connectivity: Response = await fetch(`${listener.endpoint}/v1/connectivity`, { headers: { Origin: origin } });
+    expect(await connectivity.json()).toMatchObject({ name: 'provider-router', authentication_required: false, ready: true, providers: 1, models: 1 });
+    expect(connectivity.headers.get('access-control-allow-origin')).toBe(origin);
+    const response: Response = await fetch(`${listener.endpoint}/v1/inference`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify(request(connection)) });
+    expect(response.status).toBe(200);  // RevExt: 40
+    expect(response.headers.get('access-control-allow-origin')).toBe(origin);
+    const missing: Response = await fetch(`${listener.endpoint}/unknown`, { headers: { Origin: origin } });
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get('access-control-allow-origin')).toBe(origin);
+  });  // RevExt: 42
+// RevExt: 34
+  it('enforces browser approval before every endpoint and restricts preflight methods and headers', async (): Promise<void> => {
+    const origin: string = 'https://attalid.example';  // RevExt: 38
+    const { listener } = await fixture(undefined, false, [origin]);
+    for (const rejectedOrigin of ['null', 'https://untrusted.example', `${origin}.evil.example`, `${origin}/path`]) {
+      for (const endpoint of ['/health', '/v1/connectivity', '/v1/providers', '/v1/models', '/v1/inference']) {
+        const response: Response = await fetch(`${listener.endpoint}${endpoint}`, { headers: { Origin: rejectedOrigin } });
+        expect(response.status).toBe(403);
+        expect(response.headers.get('access-control-allow-origin')).toBeNull();
+      }
+    }  // RevExt: 45
+    const rejectedPreflights: Record<string, string>[] = [{ 'Access-Control-Request-Method': 'DELETE' }, { 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'x-custom-header' }];
+    for (const headers of rejectedPreflights) {
+      expect((await fetch(`${listener.endpoint}/v1/inference`, { method: 'OPTIONS', headers: { Origin: origin, ...headers } })).status).toBe(403);
+    }  // RevExt: 46
+  });  // RevExt: 43
+// RevExt: 35
+  it('tests the client key and exposed model readiness without calling a provider', async (): Promise<void> => {
+    let calls: number = 0;  // RevExt: 48
+    const origin: string = 'https://attalid.example';  // RevExt: 39
+    const { listener, connection, store, token } = await fixture(async (): Promise<never> => { calls++; throw new Error('The connectivity check must not run inference.'); }, true, [origin]);
+    const unauthorized: Response = await fetch(`${listener.endpoint}/v1/connectivity`, { headers: { Origin: origin } });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get('access-control-allow-origin')).toBe(origin);
+    expect(await unauthorized.json()).toMatchObject({ error: { code: 'CLIENT_UNAUTHORIZED' } });
+    expect((await fetch(`${listener.endpoint}/v1/connectivity`, { headers: { Authorization: `Bearer ${token}`, Origin: origin } })).status).toBe(200);
+    await store.saveConnection({ ...connection, exposed: false });
+    expect(await (await fetch(`${listener.endpoint}/v1/connectivity`, { headers: { Authorization: `Bearer ${token}`, Origin: origin } })).json()).toMatchObject({ ready: false, providers: 0, models: 0 });
+    expect(calls).toBe(0);  // RevExt: 50
+  });  // RevExt: 44
+// RevExt: 36
   it('serves discovery and inference without a key when authentication is disabled, while rejecting browser origins and rebinding hosts', async (): Promise<void> => {
     const { listener, connection } = await fixture(undefined, false);
     expect(await (await fetch(`${listener.endpoint}/health`)).json()).toMatchObject({ authentication_required: false });
@@ -38,7 +86,7 @@ describe('Provider Router API', (): void => {
     const catalogue = await (await fetch(`${listener.endpoint}/v1/models`)).json() as { data: { provider_router: Record<string, unknown> }[] };
     expect(catalogue.data[0]?.provider_router).toMatchObject({ connection_id: connection.id, connection_name: connection.name, reasoning_efforts: ['low', 'high'], tools: true, structured_output: true });
     const response: Response = await fetch(`${listener.endpoint}/v1/inference`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request(connection)) });
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(200);  // RevExt: 41
     expect((await fetch(`${listener.endpoint}/v1/models`, { headers: { Origin: 'https://unrelated.example' } })).status).toBe(403);
     const rebound: number | undefined = await new Promise<number | undefined>((resolve, reject): void => {
       const call = httpRequest(`${listener.endpoint}/v1/models`, { headers: { Host: 'unrelated.example' } }, (response: IncomingMessage): void => { response.resume(); resolve(response.statusCode); });
@@ -84,7 +132,7 @@ describe('Provider Router API', (): void => {
       expect(rejected.status).toBe(401);
       expect(await rejected.json()).toMatchObject({ error: { code: 'CLIENT_UNAUTHORIZED' } });
       expect((await post(listener.endpoint, invalid, request(connection))).status).toBe(401);
-    }
+    }  // RevExt: 47
 // RevExt: 33
     const visible: string = await (await fetch(`${listener.endpoint}/v1/providers`, { headers: { Authorization: `Bearer ${token}` } })).text();
     expect(JSON.parse(visible)).toMatchObject({ providers: [{ id: connection.id, models: [{ reasoning_efforts: ['low', 'high'] }] }] });
@@ -137,10 +185,10 @@ describe('Provider Router API', (): void => {
   });  // RevExt: 26
 // RevExt: 14
   it('rejects malformed text blocks and unmatched tool results before calling a provider', async (): Promise<void> => {
-    let calls: number = 0;
+    let calls: number = 0;  // RevExt: 49
     const { listener, token, connection } = await fixture(async (): Promise<InferenceResult> => { calls++; throw new Error('Invalid input must not reach the provider.'); });
     for (const messages of [[{ role: 'user', content: [{ type: 'text', text: 123 }] }], [{ role: 'tool', tool_call_id: 'unknown', content: 'Synthetic result' }]]) expect((await post(listener.endpoint, token, { ...request(connection), messages })).status).toBe(400);
-    expect(calls).toBe(0);
+    expect(calls).toBe(0);  // RevExt: 51
   });  // RevExt: 27
 });
 // RevExt: 15

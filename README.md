@@ -5,6 +5,7 @@ Provider Router is an independent, MIT-licensed desktop application that exposes
 - Reuse the existing login in your installed Codex CLI, or select direct HTTP inference using existing Codex subscription credentials.
 - Connect OpenRouter with your own API key.
 - Choose which connections and models to expose, restrict allowed thinking efforts, and optionally issue separate revocable keys to client applications.
+- Approve exact website origins to use local providers from hosted web applications, and check connectivity without making an inference call.
 - Keep the API running in the background while the settings window is closed.
 - Use loopback access on port 47831 without client keys by default, optionally require keys, or explicitly enable remote access through TLS or your own HTTPS reverse proxy.
 - Install on Windows x64/ARM64 and macOS Intel/Apple Silicon. Linux installers are not distributed.

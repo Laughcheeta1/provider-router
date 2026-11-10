@@ -48,6 +48,7 @@
           <form id="network">
             <label class="check full-width"><input type="checkbox" name="require_api_key"><span>Require client API keys</span></label>
             <label>Listener host<input name="host" required spellcheck="false"></label><label>Port<input type="number" min="1" max="65535" name="port" required></label>
+            <label class="full-width">Approved website origins<textarea name="browser_origins" rows="3" spellcheck="false" placeholder="https://your-app.example"></textarea><span>One exact website origin per line. Only these websites may access this API. Leave empty to disable browser access.</span></label>
             <details class="advanced-settings full-width"><summary>Remote access</summary><div class="form-grid">
               <label class="check full-width"><input type="checkbox" name="remote_enabled"><span>Enable remote access</span></label>
               <label class="check full-width"><input type="checkbox" name="trusted_proxy"><span>Use a TLS reverse proxy</span></label>
@@ -65,9 +66,10 @@
           <ol><li>In Providers, add an account using your installed Codex login, direct Codex subscription credentials, or an OpenRouter key.</li><li>Refresh models, choose the models and allowed thinking efforts, save, and enable the provider.</li><li>Connect your application to the endpoint shown in API access. The default is <code>http://127.0.0.1:47831</code>; OpenAI SDK base URLs end in <code>/v1</code>.</li></ol>
           <h3>Authentication and network settings</h3>
           <p>New installations accept local calls without client API keys. API access lets you change the port and require keys. The API keys page creates separate revocable application keys, shown only once. Provider account credentials remain separate. Existing installations retain their authentication requirement after an upgrade.</p>
-          <p>SDKs that require a nonempty key can use <code>local</code> while authentication is disabled. When keys are required, send <code>Authorization: Bearer YOUR_CLIENT_KEY</code>. Remote access always requires keys and explicit TLS configuration. Browser-origin requests are rejected; use a native application or server client.</p>
+          <p>SDKs that require a nonempty key can use <code>local</code> while authentication is disabled. When keys are required, send <code>Authorization: Bearer YOUR_CLIENT_KEY</code>. Remote access always requires keys and explicit TLS configuration. To connect a hosted website, add its exact HTTPS origin in API access under Approved website origins. Browser access is disabled until you approve an origin. Your browser may also ask for permission to reach local devices. Native applications and server clients do not need this browser approval.</p>
           <h3>Endpoints</h3>
           <dl><dt><code>GET /health</code></dt><dd>Public Router identity, protocol version, version, instance ID and whether authentication is required.</dd>
+          <dt><code>GET /v1/connectivity</code></dt><dd>Check authentication and whether at least one model is exposed, without making a provider call. Includes Router identity, ready, providers and models counts.</dd>
           <dt><code>GET /v1/providers</code></dt><dd>Enabled provider connections and their allowed model capabilities, thinking efforts and token limits.</dd>
           <dt><code>GET /v1/models</code></dt><dd>OpenAI model list. Each qualified ID is CONNECTION_UUID/MODEL_ID. The provider_router extension includes the connection name, provider, model capabilities and allowed thinking efforts.</dd>
           <dt><code>POST /v1/chat/completions</code></dt><dd>OpenAI-compatible messages, tools, structured output and reasoning_effort.</dd>
@@ -85,7 +87,7 @@ curl http://127.0.0.1:47831/v1/models</code></pre>
   -d '{"model":"MODEL_ID","messages":[{"role":"user","content":"Reply with hello."}]}'</code></pre>
           <h3>Behavior and troubleshooting</h3>
           <p>Streaming is finite SSE emitted after the provider completes. Only text input is supported in protocol version 1. Tool calls are returned to your application for execution. Models and thinking efforts outside your exposed selection are rejected before inference. Closing settings leaves the service running; Quit stops it.</p>
-          <p>Connection refused: open Router and check API access for its listening endpoint and startup error. HTTP 401: supply a current client key or disable key requirements for local access. HTTP 403: browser-origin requests are unsupported. Unavailable model: refresh the provider catalogue, save your selection and enable the provider. HTTP 429: wait for existing inference requests to finish. Provider authentication failures require repairing the selected provider account.</p>
+          <p>Connection refused: open Router and check API access for its listening endpoint and startup error. HTTP 401: supply a current client key or disable key requirements for local access. HTTP 403: approve the exact website origin in API access, and connect using the configured loopback host. Browser network error: check site permissions for local network access, the approved origin and your API port. Unavailable model: refresh the provider catalogue, save your selection and enable the provider. HTTP 429: wait for existing inference requests to finish. Provider authentication failures require repairing the selected provider account.</p>
         </section>
       </main>
     </div>

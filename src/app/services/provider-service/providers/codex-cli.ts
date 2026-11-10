@@ -11,7 +11,8 @@ import { resolveNativeCodex, type NativeCodexCommand } from './native-codex.ts';
 import { prepareWslCodex, resolveWslCodex, type WslCodexContext, type WslCodexLaunch } from './wsl-codex.ts';
 import { cliDecisionSchema, decodeCliDecision, type CliDecision } from './cli-decision.ts';
 
-const disabledFeatures: string[] = ['shell_tool', 'unified_exec', 'multi_agent', 'multi_agent_v2', 'apps', 'plugins', 'hooks', 'code_mode_host', 'browser_use', 'browser_use_external', 'in_app_browser', 'computer_use', 'image_generation', 'skill_search', 'skill_mcp_dependency_install', 'view_image', 'sleep_tool', 'tool_suggest'];
+/** Native goals require persistence; user-input tools require an interactive session. Neither belongs in this stateless model transport. */
+const disabledFeatures: string[] = ['shell_tool', 'unified_exec', 'multi_agent', 'multi_agent_v2', 'apps', 'plugins', 'hooks', 'code_mode_host', 'browser_use', 'browser_use_external', 'in_app_browser', 'computer_use', 'image_generation', 'skill_search', 'skill_mcp_dependency_install', 'view_image', 'sleep_tool', 'tool_suggest', 'goals', 'default_mode_request_user_input'];
 
 /** Read catalog metadata only, excluding model instructions, credentials and local tools. */
 export function codexCatalog(value: unknown): Model[] {

@@ -15,6 +15,13 @@ it('rejects insecure settings before persistence and retains valid settings afte
     const runtime: SettingsRuntime = { endpoint: () => null, error: () => null, distributions: async () => [], platform: 'linux', revokeClient: (id: string): Promise<void> => store.revokeClient(id), restart: async (): Promise<never> => { throw new Error('port unavailable'); }, checkUpdates: async () => {} };
     const useCase: ManageUseCase = new ManageUseCase(store, providers, runtime);
     const original: ReturnType<RouterStore['publicState']>['network'] = store.publicState().network;
+    for (const invalid of ['*', 'null', 'https://example.com/path', 'https://example.com/', 'http://remote.example']) {
+      await expect(store.saveNetwork({ ...original, browser_origins: [invalid] })).rejects.toThrow();
+      expect(store.publicState().network).toEqual(original);
+    }
+    await store.saveNetwork({ ...original, browser_origins: ['https://app.example', 'http://127.0.0.1:5173'] });
+    expect(store.publicState().network.browser_origins).toEqual(['https://app.example', 'http://127.0.0.1:5173']);
+    await store.saveNetwork(original);
     await expect(useCase.execute({ type: 'save_network', network: { ...original, host: '0.0.0.0' } })).rejects.toThrow('Enable remote access');
     expect(store.publicState().network).toEqual(original);
     await expect(useCase.execute({ type: 'save_network', network: { ...original, port: 47849 } })).rejects.toThrow('port unavailable');

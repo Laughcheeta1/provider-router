@@ -15,3 +15,12 @@ Open **Documentation** inside Router for endpoints, examples and troubleshooting
 For remote access, require client keys, enable it in API settings and provide either a TLS certificate/private-key pair for a direct listener, or your own HTTPS reverse proxy forwarding to a loopback listener with **Use a TLS reverse proxy** enabled. Provider Router does not provision a tunnel. Keep the same per-application keys and revocation controls. Browser-origin access is rejected; use a trusted application or backend client.
 
 If direct Codex credentials use an unsupported encrypted storage backend, select Codex CLI mode. If a refresh outcome is uncertain, Provider Router stops rather than replaying a possibly consumed refresh grant; repair or renew the login using Codex. It does not start a separate Provider Router login flow.
+
+## Connect a hosted website
+
+1. Open API access and add the website's exact HTTPS origin under Approved website origins, for example `https://app.example`, then save. Do not include a path or trailing slash. Browser access is disabled when the list is empty.
+2. In the website integration settings, enter the Router endpoint shown in API access. The default is `http://127.0.0.1:47831`. Add a Router client key only if Require client API keys is enabled.
+3. Choose the website's connectivity test and allow local-network access if the browser requests it. A successful connection check confirms Router access and exposed models; it does not spend provider inference usage or verify the upstream provider account.
+4. If connection fails, check Router is running, the origin matches exactly, the endpoint port is correct, the client key is current when required, and browser local-network permission is enabled.
+
+Only approve websites you trust to make inference requests through your accounts. Provider credentials remain in Router. Removing an approved origin blocks future browser requests; already accepted requests may finish.

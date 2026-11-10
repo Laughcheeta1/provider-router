@@ -2,7 +2,7 @@
 
 The public inference API implements a documented subset of the OpenAI API. Set an OpenAI SDK's `baseURL` to `http://127.0.0.1:47831/v1` and its `apiKey` to the client key when authentication is enabled. New installations do not require keys; SDKs that require a nonempty key can use `local` as a placeholder while key requirements are disabled. Native application accounts and provider credentials are not API inputs. Use HTTPS for remotely exposed endpoints.
 
-Local access defaults to no authentication. When **Require client API keys** is enabled, every endpoint except `/health` requires `Authorization: Bearer CLIENT_KEY`. Existing settings without the new authentication field retain required keys on upgrade. Remote exposure always requires keys. Browser-origin requests are rejected and local Host headers are checked against the listener to prevent DNS rebinding.
+Local access defaults to no authentication. When **Require client API keys** is enabled, every endpoint except `/health` requires `Authorization: Bearer CLIENT_KEY`. Existing settings without the new authentication field retain required keys on upgrade. Remote exposure always requires keys. Browser access is disabled by default. In API access, approve each exact HTTPS website origin (for example `https://app.example`) under Approved website origins; loopback HTTP origins are supported for development. Origins cannot contain paths, trailing slashes or wildcards. Approved origins receive CORS headers on successes and errors, and OPTIONS accepts GET/POST with authorization, content-type and x-request-id headers. Requests from other origins are rejected before authentication or inference. Local Host headers remain checked against the listener to prevent DNS rebinding. Browser access does not expose settings, provider credentials or account-management operations.
 
 ## GET /health
 
@@ -11,6 +11,16 @@ This public identity probe returns installation identity, protocol compatibility
 ```json
 {"name":"provider-router","protocol_version":1,"instance_id":"019a1111-1111-7111-8111-111111111111","version":"0.1.0","authentication_required":false}
 ```
+
+## GET /v1/connectivity
+
+A lightweight connection check uses the same client-key policy as inference, with no provider request or subscription usage. It returns Router identity, authentication policy, counts of exposed providers/models, and `ready` indicating whether at least one model is exposed. It does not verify upstream account validity; provider errors can still occur during inference.
+
+```json
+{"name":"provider-router","protocol_version":1,"instance_id":"019a1111-1111-7111-8111-111111111111","version":"0.1.0","authentication_required":false,"ready":true,"providers":1,"models":2}
+```
+
+A browser integration should first ask the user to connect, explain how to approve its own exact origin in Router, and handle local-network permission denial and unavailable services. Browser CORS approval and client API keys are separate controls. Enabling CORS does not disable required-key authentication. Each browser controls access from hosted HTTPS pages to HTTP localhost; use loopback targets and test supported browsers. `GET /health` remains available without a key, but browser origins still need approval. CLI clients without an Origin header remain compatible.
 
 ## GET /v1/models
 

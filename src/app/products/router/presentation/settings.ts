@@ -37,7 +37,8 @@ async function refresh(): Promise<void> {
   const clients: HTMLElement = element('clients'); clients.replaceChildren();
   for (const client of snapshot.clients) { const row: HTMLElement = text('div', '', 'card'); row.append(text('span', client.name), button('Revoke', async (): Promise<void> => { await invoke({ type: 'revoke_client', id: client.id }); await refresh(); }, true)); clients.append(row); }
   const network: HTMLFormElement = element('network') as HTMLFormElement;
-  for (const [key, value] of Object.entries(snapshot.network)) { const field: HTMLInputElement | null = network.elements.namedItem(key) as HTMLInputElement | null; if (field) { if (typeof value === 'boolean') field.checked = value; else field.value = String(value || ''); } }
+  (network.elements.namedItem('browser_origins') as HTMLTextAreaElement).value = (snapshot.network.browser_origins ?? []).join('\n');
+  for (const [key, value] of Object.entries(snapshot.network)) { const field: HTMLInputElement | null = network.elements.namedItem(key) as HTMLInputElement | null; if (field) { if (typeof value === 'boolean') field.checked = value; else field.value = Array.isArray(value) ? value.join('\n') : String(value || ''); } }
 }  // RevExt: 14
 // RevExt: 5
 /** Keep selection in the renderer while persisted connection identity stays unchanged. */
@@ -155,7 +156,7 @@ element('dismiss-key').onclick = (): void => { (element('client-token') as HTMLI
 };
 (element('network') as HTMLFormElement).onsubmit = (event: SubmitEvent): void => {
   event.preventDefault(); const form: HTMLFormElement = event.currentTarget as HTMLFormElement;
-  void perform(async (): Promise<void> => { await invoke({ type: 'save_network', network: { require_api_key: input(form, 'require_api_key').checked, port: Number(input(form, 'port').value), host: input(form, 'host').value.trim(), remote_enabled: input(form, 'remote_enabled').checked, trusted_proxy: input(form, 'trusted_proxy').checked, ...(input(form, 'public_endpoint').value ? { public_endpoint: input(form, 'public_endpoint').value.trim() } : {}), ...(input(form, 'tls_certificate').value ? { tls_certificate: input(form, 'tls_certificate').value.trim() } : {}), ...(input(form, 'tls_key').value ? { tls_key: input(form, 'tls_key').value.trim() } : {}) } }); await refresh(); });
+  void perform(async (): Promise<void> => { await invoke({ type: 'save_network', network: { browser_origins: (form.elements.namedItem('browser_origins') as HTMLTextAreaElement).value.split(/\r?\n/).map((origin: string): string => origin.trim()).filter(Boolean), require_api_key: input(form, 'require_api_key').checked, port: Number(input(form, 'port').value), host: input(form, 'host').value.trim(), remote_enabled: input(form, 'remote_enabled').checked, trusted_proxy: input(form, 'trusted_proxy').checked, ...(input(form, 'public_endpoint').value ? { public_endpoint: input(form, 'public_endpoint').value.trim() } : {}), ...(input(form, 'tls_certificate').value ? { tls_certificate: input(form, 'tls_certificate').value.trim() } : {}), ...(input(form, 'tls_key').value ? { tls_key: input(form, 'tls_key').value.trim() } : {}) } }); await refresh(); });
 };
 // RevExt: 11
 /** Renderer identity generation uses only browser cryptography; it never receives Node. */

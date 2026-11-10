@@ -40,23 +40,40 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
   };
 // RevExt: 3
   async function dispatch(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    // Local browser pages cannot use the API or rebind its host through permissive CORS.
-    if (request.headers.origin) throw new RouterError('BROWSER_ORIGIN_REJECTED', 'Browser-origin access is not enabled for this API.', 403);
     if (!network.remote_enabled && request.headers.host && ![new URL(endpoint).host, `localhost:${new URL(endpoint).port}`].includes(request.headers.host)) throw new RouterError('HOST_REJECTED', 'Use the configured local Router endpoint.', 403);
+    const origin: string | undefined = request.headers.origin;
+    if (origin) {
+      if (!network.browser_origins?.includes(origin)) throw new RouterError('BROWSER_ORIGIN_REJECTED', 'Approve this website origin in Provider Router API access settings.', 403);
+      response.setHeader('Access-Control-Allow-Origin', origin);
+      response.setHeader('Vary', 'Origin');
+      response.setHeader('Access-Control-Expose-Headers', 'x-request-id');
+    }  // RevExt: 9
+    if (request.method === 'OPTIONS') {
+      const method: string = request.headers['access-control-request-method'] || '';
+      const headers: string[] = (request.headers['access-control-request-headers'] || '').toLowerCase().split(',').map((header: string): string => header.trim()).filter(Boolean);
+      if (!origin || !['GET', 'POST'].includes(method) || headers.some((header: string): boolean => !['authorization', 'content-type', 'x-request-id'].includes(header))) throw new RouterError('CORS_PREFLIGHT_REJECTED', 'This browser request method or header is not supported.', 403);
+      response.writeHead(204, { 'Access-Control-Allow-Methods': 'GET, POST', 'Access-Control-Allow-Headers': 'authorization, content-type, x-request-id', 'Cache-Control': 'no-store' });
+      response.end(); return;
+    }  // RevExt: 10
     const target: URL = new URL(request.url || '/', endpoint);
     if (target.pathname === '/health' && request.method === 'GET') { json(response, 200, health); return; }
     const token: string | undefined = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.authorization || '')?.[1];
     const client: Client | undefined = token ? store.authenticate(token) : undefined;
     if (network.require_api_key && !client) throw new RouterError('CLIENT_UNAUTHORIZED', 'A valid Provider Router client key is required.', 401);
+    if (target.pathname === '/v1/connectivity' && request.method === 'GET') {
+      const connections: Connection[] = store.connections().filter((connection: Connection): boolean => connection.exposed);
+      const models: number = connections.reduce((count: number, connection: Connection): number => count + connection.models.length, 0);
+      json(response, 200, { ...health, ready: models > 0, providers: connections.length, models }); return;
+    }  // RevExt: 11
     if (target.pathname === '/v1/models' && request.method === 'GET') { json(response, 200, modelList(store.connections())); return; }
     if (target.pathname === '/v1/providers' && request.method === 'GET') {
       const providers: ProviderDescriptor[] = store.connections().filter((connection: Connection): boolean => connection.exposed).map((connection: Connection): ProviderDescriptor => ({ id: connection.id, name: connection.name, provider: connection.method === 'openrouter_http' ? 'openrouter' : 'codex', method: connection.method, models: connection.models }));
       json(response, 200, { protocol_version: PROTOCOL_VERSION, providers }); return;
-    }
+    }  // RevExt: 12
     const cancel: RegExpExecArray | null = /^\/v1\/inference\/([0-9a-f-]+)\/cancel$/.exec(target.pathname);
     if (cancel && request.method === 'POST') {
       inference.cancel(client?.id ?? store.publicState().instance_id, cancel[1]!); json(response, 200, { cancelled: true }); return;
-    }
+    }  // RevExt: 13
     if (!['/v1/inference', '/v1/chat/completions', '/v1/responses'].includes(target.pathname) || request.method !== 'POST') throw new RouterError('NOT_FOUND', 'This endpoint is unavailable.', 404);
     if (!request.headers['content-type']?.startsWith('application/json')) throw new RouterError('CONTENT_TYPE_REQUIRED', 'Use application/json for inference requests.', 415);
     const value: unknown = await readJson(request);
@@ -77,7 +94,7 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
       throw error;
     } finally {
       response.removeListener('close', disconnect); request.removeListener('aborted', disconnect);
-    }
+    }  // RevExt: 14
   }
 }  // RevExt: 6
 // RevExt: 4

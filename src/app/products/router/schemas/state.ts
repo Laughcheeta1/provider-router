@@ -4,6 +4,12 @@ import { connectionSchema, uuidSchema, type Connection } from '../../../common/s
 export const networkSchema = z.object({
   port: z.number().int().min(1).max(65535).default(47831),
   require_api_key: z.boolean().default(false),
+  browser_origins: z.array(z.string().refine((value: string): boolean => {
+    try {
+      const origin: URL = new URL(value);
+      return origin.origin === value && (origin.protocol === 'https:' || (origin.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)));
+    } catch { return false; }
+  }, 'Use an exact HTTPS website origin, or an HTTP loopback development origin, without a path or trailing slash.')).max(50).optional(),
   remote_enabled: z.boolean().default(false),
   host: z.string().default('127.0.0.1'),
   tls_certificate: z.string().optional(), tls_key: z.string().optional(),
