@@ -32,6 +32,7 @@ async function refresh(): Promise<void> {
   status.textContent = snapshot.error || '';
   updateEnvironmentFields();  // RevExt: 21
   element('endpoint').textContent = snapshot.endpoint || 'API is stopped.';
+  element('key-policy').textContent = snapshot.network.require_api_key ? 'Applications must send one of these keys.' : 'Keys are optional. Enable key requirements in API access to restrict applications.';
   renderProviders();
   const clients: HTMLElement = element('clients'); clients.replaceChildren();
   for (const client of snapshot.clients) { const row: HTMLElement = text('div', '', 'card'); row.append(text('span', client.name), button('Revoke', async (): Promise<void> => { await invoke({ type: 'revoke_client', id: client.id }); await refresh(); }, true)); clients.append(row); }
@@ -51,7 +52,7 @@ function renderProviders(): void {
     const name: HTMLElement = text('span', '', 'provider-label'); name.append(text('strong', connection.name), text('small', methods[connection.method]));
     row.append(icon, name, text('span', connection.exposed ? 'Enabled' : 'Disabled', connection.exposed ? 'provider-state enabled' : 'provider-state'));
     row.onclick = (): void => { selectedId = connection.id; renderProviders(); }; list.append(row);
-  }
+  }  // RevExt: 25
   const add: HTMLButtonElement = document.createElement('button'); add.type = 'button'; add.className = 'add-provider-row'; add.textContent = '+  Add provider'; add.onclick = openProviderDialog; list.append(add);
   const detail: HTMLElement = element('provider-detail'); detail.replaceChildren();
   const connection: Connection | undefined = connections.find((current: Connection): boolean => current.id === selectedId);
@@ -64,8 +65,14 @@ function renderProviders(): void {
   const configuration: HTMLElement = text('div', '', 'detail-section'); configuration.append(text('h3', 'Configuration'));
   const form: HTMLFormElement = document.createElement('form'); form.className = 'provider-configuration';
   const label: HTMLLabelElement = document.createElement('label'); label.textContent = 'Label'; const name: HTMLInputElement = document.createElement('input'); name.name = 'name'; name.value = connection.name; name.required = true; name.maxLength = 100; label.append(name);
-  const save: HTMLButtonElement = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save'; form.append(label, save);
-  form.onsubmit = (event: SubmitEvent): void => { event.preventDefault(); void perform(async (): Promise<void> => { await invoke({ type: 'save_connection', connection: { ...connection, name: name.value.trim() } }); await refresh(); }); };
+  form.append(label);
+  for (const field of connection.method === 'openrouter_http' ? ['api_key'] : ['codex_home', 'executable']) {
+    const fieldLabel: HTMLLabelElement = document.createElement('label'); fieldLabel.textContent = field === 'api_key' ? 'Replace provider API key' : field === 'codex_home' ? 'Codex home' : 'Codex executable';
+    const value: HTMLInputElement = document.createElement('input'); value.name = field; value.autocomplete = 'off';
+    value.type = field === 'api_key' ? 'password' : 'text'; value.value = field === 'codex_home' ? connection.codex_home ?? '' : field === 'executable' ? connection.executable ?? '' : ''; fieldLabel.append(value); form.append(fieldLabel);
+  }  // RevExt: 26
+  const save: HTMLButtonElement = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save'; form.append(save);
+  form.onsubmit = (event: SubmitEvent): void => { event.preventDefault(); void perform(async (): Promise<void> => { await invoke({ type: 'save_connection', connection: { ...connection, name: name.value.trim(), ...(connection.method !== 'openrouter_http' ? { codex_home: input(form, 'codex_home').value.trim() || undefined, executable: input(form, 'executable').value.trim() || undefined } : {}) }, ...(connection.method === 'openrouter_http' ? { api_key: input(form, 'api_key').value || undefined } : {}) }); await refresh(); }); };
   configuration.append(form); detail.append(configuration);
   const authentication: HTMLElement = text('div', '', 'detail-section'); authentication.append(text('h3', 'Authentication'), text('p', connection.method === 'openrouter_http' ? 'Uses the API key saved with this connection.' : 'Uses your existing Codex login.'));
   if (connection.environment === 'wsl') authentication.append(text('p', `WSL · ${connection.wsl_distribution}`, 'muted'));
@@ -95,8 +102,8 @@ function confirmRemoval(name: string): Promise<boolean> {
 }  // RevExt: 17
 // RevExt: 8
 function navigate(): void {
-  const page: string = ['providers', 'applications', 'api-access'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'providers';
-  const names: Record<string, string> = { providers: 'Providers', applications: 'Applications', 'api-access': 'API access' };
+  const page: string = ['providers', 'applications', 'api-access', 'documentation'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'providers';
+  const names: Record<string, string> = { providers: 'Providers', applications: 'API keys', 'api-access': 'API access', documentation: 'Documentation' };
   for (const id of Object.keys(names)) element(id).hidden = id !== page;
   for (const link of Array.from(document.querySelectorAll<HTMLAnchorElement>('.sidebar-nav a'))) { if (link.hash === `#${page}`) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); }
   element('page-title').textContent = names[page]!; element('breadcrumb-page').textContent = names[page]!;
@@ -106,14 +113,29 @@ function showModelSelection(card: HTMLElement, connection: Connection, available
   card.querySelector('.model-selection')?.remove();
   const selection: HTMLElement = text('div', '', 'model-selection');
   const search: HTMLInputElement = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search models…'; search.setAttribute('aria-label', 'Search models');
-  const list: HTMLElement = text('div', '', 'models'); const selected: Map<string, HTMLInputElement> = new Map();
+  const list: HTMLElement = text('div', '', 'models'); const selected: Map<string, HTMLInputElement> = new Map(); const efforts: Map<string, Map<string, HTMLInputElement>> = new Map();
   for (const model of available) {
     const label: HTMLLabelElement = document.createElement('label'); label.className = 'model-row'; const checkbox: HTMLInputElement = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = connection.models.some((current: Model): boolean => current.id === model.id); selected.set(model.id, checkbox);
     const description: HTMLElement = text('span', ''); description.append(text('strong', model.name), text('small', model.reasoning_efforts.join(' / ') || 'Default reasoning')); label.append(checkbox, description); label.dataset.search = (model.name + ' ' + model.id).toLowerCase(); list.append(label);
-  }
-  search.oninput = (): void => { for (const row of Array.from(list.querySelectorAll<HTMLElement>('[data-search]'))) row.hidden = !row.dataset.search!.includes(search.value.toLowerCase()); };
+    const choices: Map<string, HTMLInputElement> = new Map(); efforts.set(model.id, choices);
+    const allowed: Model | undefined = connection.models.find((current: Model): boolean => current.id === model.id);
+    const effortGroup: HTMLFieldSetElement = document.createElement('fieldset'); effortGroup.append(text('legend', `${model.name} thinking efforts`));
+    for (const effort of model.reasoning_efforts) {
+      const effortLabel: HTMLLabelElement = document.createElement('label'); effortLabel.className = 'check';
+      const option: HTMLInputElement = document.createElement('input'); option.type = 'checkbox'; option.checked = !allowed || allowed.reasoning_efforts.includes(effort); option.setAttribute('aria-label', `${model.name}: allow ${effort}`); choices.set(effort, option);
+      effortLabel.append(option, text('span', effort)); effortGroup.append(effortLabel);
+    }
+    effortGroup.hidden = !checkbox.checked || !choices.size;
+    checkbox.onchange = (): void => { effortGroup.hidden = !checkbox.checked || !choices.size; };
+    label.after(effortGroup);
+  }  // RevExt: 27
+  search.oninput = (): void => { for (const row of Array.from(list.querySelectorAll<HTMLElement>('[data-search]'))) { row.hidden = !row.dataset.search!.includes(search.value.toLowerCase()); const group: Element | null = row.nextElementSibling; if (group instanceof HTMLFieldSetElement) group.hidden = row.hidden || !(row.querySelector('input') as HTMLInputElement).checked || !group.querySelector('input'); } };
   if (!available.length) list.append(text('p', 'No models returned by this provider.'));
-  selection.append(search, list, button('Save selected models', async (): Promise<void> => { await invoke({ type: 'save_connection', connection: { ...connection, models: available.filter((model: Model): boolean => Boolean(selected.get(model.id)?.checked)) } }); await refresh(); })); card.append(selection);
+  selection.append(search, list, button('Save selected models', async (): Promise<void> => { await invoke({ type: 'save_connection', connection: { ...connection, models: available.filter((model: Model): boolean => Boolean(selected.get(model.id)?.checked)).map((model: Model): Model => {
+    const permitted: string[] = model.reasoning_efforts.filter((effort: string): boolean => Boolean(efforts.get(model.id)?.get(effort)?.checked));
+    if (model.reasoning_efforts.length && !permitted.length) throw new Error(`Choose at least one thinking effort for ${model.name}.`);
+    return { ...model, reasoning_efforts: permitted, default_reasoning_effort: model.default_reasoning_effort && permitted.includes(model.default_reasoning_effort) ? model.default_reasoning_effort : permitted[0] ?? null };
+  }) } }); await refresh(); })); card.append(selection);
 }  // RevExt: 19
 // RevExt: 10
 element('refresh').onclick = (): void => { void perform(refresh); };
@@ -133,7 +155,7 @@ element('dismiss-key').onclick = (): void => { (element('client-token') as HTMLI
 };
 (element('network') as HTMLFormElement).onsubmit = (event: SubmitEvent): void => {
   event.preventDefault(); const form: HTMLFormElement = event.currentTarget as HTMLFormElement;
-  void perform(async (): Promise<void> => { await invoke({ type: 'save_network', network: { port: Number(input(form, 'port').value), host: input(form, 'host').value.trim(), remote_enabled: input(form, 'remote_enabled').checked, trusted_proxy: input(form, 'trusted_proxy').checked, ...(input(form, 'public_endpoint').value ? { public_endpoint: input(form, 'public_endpoint').value.trim() } : {}), ...(input(form, 'tls_certificate').value ? { tls_certificate: input(form, 'tls_certificate').value.trim() } : {}), ...(input(form, 'tls_key').value ? { tls_key: input(form, 'tls_key').value.trim() } : {}) } }); await refresh(); });
+  void perform(async (): Promise<void> => { await invoke({ type: 'save_network', network: { require_api_key: input(form, 'require_api_key').checked, port: Number(input(form, 'port').value), host: input(form, 'host').value.trim(), remote_enabled: input(form, 'remote_enabled').checked, trusted_proxy: input(form, 'trusted_proxy').checked, ...(input(form, 'public_endpoint').value ? { public_endpoint: input(form, 'public_endpoint').value.trim() } : {}), ...(input(form, 'tls_certificate').value ? { tls_certificate: input(form, 'tls_certificate').value.trim() } : {}), ...(input(form, 'tls_key').value ? { tls_key: input(form, 'tls_key').value.trim() } : {}) } }); await refresh(); });
 };
 // RevExt: 11
 /** Renderer identity generation uses only browser cryptography; it never receives Node. */

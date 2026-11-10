@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   connection.models = await adapter.models(connection, AbortSignal.timeout(10_000));
   await store.saveConnection(connection);
   const client: { id: string; token: string } = await store.createClient('Synthetic development rehearsal');
-  const server: ListeningRouter = await startRouter(store, { codex_cli: adapter, codex_http: new CodexHttpAdapter(), openrouter_http: new OpenRouterAdapter((): undefined => undefined) }, { port: Number(process.env.PROVIDER_ROUTER_PORT || 47831), host: '127.0.0.1', remote_enabled: false, trusted_proxy: false }, '0.1.0');
+  const server: ListeningRouter = await startRouter(store, { codex_cli: adapter, codex_http: new CodexHttpAdapter(), openrouter_http: new OpenRouterAdapter((): undefined => undefined) }, { port: Number(process.env.PROVIDER_ROUTER_PORT || 47831), host: '127.0.0.1', remote_enabled: false, trusted_proxy: false, require_api_key: true }, '0.1.0');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await writeFile(path.join(directory, 'ready.json'), JSON.stringify({ endpoint: server.endpoint, token: client.token, client_id: client.id, connection_id: connection.id, instance_id: store.publicState().instance_id, protocol_version: 1 }), { mode: 0o600 });
   console.log(`Provider Router rehearsal listening at ${server.endpoint}`);

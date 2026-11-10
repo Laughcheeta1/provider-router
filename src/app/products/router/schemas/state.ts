@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { connectionSchema, uuidSchema, type Connection } from '../../../common/schemas/contracts.ts';
 export const networkSchema = z.object({
   port: z.number().int().min(1).max(65535).default(47831),
+  require_api_key: z.boolean().default(false),
   remote_enabled: z.boolean().default(false),
   host: z.string().default('127.0.0.1'),
   tls_certificate: z.string().optional(), tls_key: z.string().optional(),

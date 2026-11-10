@@ -10,6 +10,8 @@ export const modelSchema = z.object({
   default_reasoning_effort: z.string().nullable(), context_window: z.number().int().positive(),
   max_output_tokens: z.number().int().positive(), tools: z.boolean(), structured_output: z.boolean(),
   input_modalities: z.array(z.string()),
+}).superRefine((model, context): void => {
+  if (model.default_reasoning_effort !== null && !model.reasoning_efforts.includes(model.default_reasoning_effort)) context.addIssue({ code: 'custom', message: 'The default thinking effort must be allowed.' });
 });
 export type Model = z.infer<typeof modelSchema>;
 export const methodSchema = z.enum(['codex_cli', 'codex_http', 'openrouter_http']);

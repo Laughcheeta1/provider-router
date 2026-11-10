@@ -22,7 +22,7 @@ export interface OpenAIRequest {
 
 /** Qualifying models disambiguates independently exposed connections without custom SDK options. */
 export function modelList(connections: Connection[]): Record<string, unknown> {
-  return { object: 'list', data: connections.filter((connection: Connection): boolean => connection.exposed).flatMap((connection: Connection): Record<string, unknown>[] => connection.models.map((model): Record<string, unknown> => ({ id: `${connection.id}/${model.id}`, object: 'model', created: 0, owned_by: connection.method === 'openrouter_http' ? 'openrouter' : 'openai', provider_router: { connection_id: connection.id, model: model.id, method: connection.method } }))) };
+  return { object: 'list', data: connections.filter((connection: Connection): boolean => connection.exposed).flatMap((connection: Connection): Record<string, unknown>[] => connection.models.map((model): Record<string, unknown> => ({ id: `${connection.id}/${model.id}`, object: 'model', created: 0, owned_by: connection.method === 'openrouter_http' ? 'openrouter' : 'openai', provider_router: { connection_id: connection.id, connection_name: connection.name, provider: connection.method === 'openrouter_http' ? 'openrouter' : 'codex', model: model.id, method: connection.method, name: model.name, reasoning_efforts: model.reasoning_efforts, default_reasoning_effort: model.default_reasoning_effort, context_window: model.context_window, max_output_tokens: model.max_output_tokens, tools: model.tools, structured_output: model.structured_output, input_modalities: model.input_modalities } }))) };
 }
 
 /** Decode supported SDK inputs explicitly; unsupported options fail before spending provider tokens. */

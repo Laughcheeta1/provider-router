@@ -19,7 +19,7 @@ export interface ListeningRouter { endpoint: string; close(): Promise<void>; rev
 export async function startRouter(store: RouterRepository, adapters: Record<Method, ProviderAdapter>, network: NetworkSettings, version: string): Promise<ListeningRouter> {
   validateNetwork(network);
   const inference: InferenceUseCase = buildInferenceUseCase(store, adapters);
-  const health: Record<string, unknown> = { name: 'provider-router', protocol_version: PROTOCOL_VERSION, instance_id: store.publicState().instance_id, version };
+  const health: Record<string, unknown> = { name: 'provider-router', protocol_version: PROTOCOL_VERSION, instance_id: store.publicState().instance_id, version, authentication_required: network.require_api_key };
   const handle: (request: IncomingMessage, response: ServerResponse) => void = (request: IncomingMessage, response: ServerResponse): void => {
     void dispatch(request, response).catch((error: unknown): void => {
       if (response.destroyed || response.writableEnded) return;
@@ -42,11 +42,12 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
   async function dispatch(request: IncomingMessage, response: ServerResponse): Promise<void> {
     // Local browser pages cannot use the API or rebind its host through permissive CORS.
     if (request.headers.origin) throw new RouterError('BROWSER_ORIGIN_REJECTED', 'Browser-origin access is not enabled for this API.', 403);
+    if (!network.remote_enabled && request.headers.host && ![new URL(endpoint).host, `localhost:${new URL(endpoint).port}`].includes(request.headers.host)) throw new RouterError('HOST_REJECTED', 'Use the configured local Router endpoint.', 403);
     const target: URL = new URL(request.url || '/', endpoint);
     if (target.pathname === '/health' && request.method === 'GET') { json(response, 200, health); return; }
     const token: string | undefined = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.authorization || '')?.[1];
     const client: Client | undefined = token ? store.authenticate(token) : undefined;
-    if (!client) throw new RouterError('CLIENT_UNAUTHORIZED', 'A valid Provider Router client key is required.', 401);
+    if (network.require_api_key && !client) throw new RouterError('CLIENT_UNAUTHORIZED', 'A valid Provider Router client key is required.', 401);
     if (target.pathname === '/v1/models' && request.method === 'GET') { json(response, 200, modelList(store.connections())); return; }
     if (target.pathname === '/v1/providers' && request.method === 'GET') {
       const providers: ProviderDescriptor[] = store.connections().filter((connection: Connection): boolean => connection.exposed).map((connection: Connection): ProviderDescriptor => ({ id: connection.id, name: connection.name, provider: connection.method === 'openrouter_http' ? 'openrouter' : 'codex', method: connection.method, models: connection.models }));
@@ -54,7 +55,7 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
     }
     const cancel: RegExpExecArray | null = /^\/v1\/inference\/([0-9a-f-]+)\/cancel$/.exec(target.pathname);
     if (cancel && request.method === 'POST') {
-      inference.cancel(client.id, cancel[1]!); json(response, 200, { cancelled: true }); return;
+      inference.cancel(client?.id ?? store.publicState().instance_id, cancel[1]!); json(response, 200, { cancelled: true }); return;
     }
     if (!['/v1/inference', '/v1/chat/completions', '/v1/responses'].includes(target.pathname) || request.method !== 'POST') throw new RouterError('NOT_FOUND', 'This endpoint is unavailable.', 404);
     if (!request.headers['content-type']?.startsWith('application/json')) throw new RouterError('CONTENT_TYPE_REQUIRED', 'Use application/json for inference requests.', 415);
@@ -68,7 +69,7 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
     response.once('close', disconnect);
     request.once('aborted', disconnect);
     try {
-      const result: InferenceResult = await inference.execute(client.id, token!, input, abort);
+      const result: InferenceResult = await inference.execute(client?.id ?? store.publicState().instance_id, client ? token! : null, input, abort);
       if (canonical) { validateOpenAIResult(canonical, result); writeOpenAI(response, canonical, result); }
       else json(response, 200, result);
     } catch (error: unknown) {
