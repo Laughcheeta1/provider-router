@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
   <title>Provider Router</title>
   <link rel="stylesheet" href="settings.css">
 </head>
@@ -14,33 +14,21 @@
         <span class="app-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M7 7h10v10H7zM3 7h4m10 0h4M3 17h4m10 0h4M7 3v4m10-4v4M7 17v4m10-4v4"/></svg></span>
         <span>Provider Router</span>
       </a>
-      <div class="sidebar-section-label">Settings</div>
       <nav class="sidebar-nav">
         <a href="#providers"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></svg><span>Providers</span></a>
-        <a href="#applications"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>API keys</span></a>
         <a href="#api-access"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 18"/></svg><span>API access</span></a>
         <a href="#documentation"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 3h10l4 4v14H5zM8 11h8M8 15h8M8 7h4"/></svg><span>Documentation</span></a>
       </nav>
 
+      <div class="sidebar-footer"><div class="sidebar-actions"><button id="refresh" type="button" aria-label="Refresh" title="Refresh" class="icon-label"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5m10.2-4a8 8 0 0 0-13.6-3L4 7m16 10-1.6 2A8 8 0 0 1 4.8 16"/></svg><span>Refresh</span></button><button id="updates" type="button" aria-label="Check for updates" title="Check for updates"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Check for updates</span></button></div></div>
     </aside>
     <div class="settings-workspace">
-      <header class="topbar">
-        <div class="breadcrumbs"><span>Settings</span><span class="breadcrumb-divider">/</span><strong id="breadcrumb-page">Providers</strong></div>
-        <div class="toolbar-actions"><button id="refresh" type="button" class="icon-label"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5m10.2-4a8 8 0 0 0-13.6-3L4 7m16 10-1.6 2A8 8 0 0 1 4.8 16"/></svg>Refresh</button><button id="updates" type="button">Check for updates</button></div>
-      </header>
+
       <main class="settings-content">
         <div class="page-heading"><h1 id="page-title">Providers</h1></div>
         <div id="status" class="status-message" role="status" aria-live="polite"></div>
-        <section id="providers" aria-labelledby="providers-title">
-          <div class="section-heading"><div><h2 id="providers-title">Providers <button id="add-provider" class="icon-button" type="button" aria-label="Add provider">+</button></h2><p>Connect your accounts and choose the models available to applications.</p></div><span class="badge">This device</span></div>
+        <section id="providers" aria-label="Providers">
           <div class="provider-panel"><div id="connections" class="provider-list" aria-label="Provider connections"></div><div id="provider-detail" class="provider-detail"></div></div>
-        </section>
-        <section hidden id="applications" aria-labelledby="applications-title">
-          <div class="section-heading"><h2 id="applications-title">API keys</h2><p id="key-policy"></p></div>
-
-          <div id="clients" class="client-list"></div>
-          <form id="add-client"><label>Name<input name="name" required maxlength="100" placeholder="My application" autocomplete="off"></label><div class="inline-form-action"><button type="submit">Create client key</button></div></form>
-          <div id="new-key" hidden><div class="key-heading"><strong>Client key</strong></div><p>Copy this key now. It is shown once.</p><input id="client-token" readonly aria-label="New client key"><button id="dismiss-key" type="button">Done</button></div>
         </section>
         <section hidden id="api-access" aria-labelledby="api-access-title">
           <div class="section-heading"><h2 id="api-access-title">API access</h2></div>
@@ -49,59 +37,495 @@
             <label class="check full-width"><input type="checkbox" name="require_api_key"><span>Require client API keys</span></label>
             <label>Listener host<input name="host" required spellcheck="false"></label><label>Port<input type="number" min="1" max="65535" name="port" required></label>
             <label class="full-width">Approved website origins<textarea name="browser_origins" rows="3" spellcheck="false" placeholder="https://your-app.example"></textarea><span>One exact website origin per line. Only these websites may access this API. Leave empty to disable browser access.</span></label>
-            <details class="advanced-settings full-width"><summary>Remote access</summary><div class="form-grid">
-              <label class="check full-width"><input type="checkbox" name="remote_enabled"><span>Enable remote access</span></label>
-              <label class="check full-width"><input type="checkbox" name="trusted_proxy"><span>Use a TLS reverse proxy</span></label>
-              <label class="full-width">Public endpoint<input name="public_endpoint" placeholder="https://providers.example.com" spellcheck="false"></label>
-              <details class="advanced-settings full-width"><summary>Direct TLS</summary><div class="form-grid"><label>Certificate<input name="tls_certificate" spellcheck="false"></label><label>Private key<input name="tls_key" spellcheck="false"></label></div></details>
-            </div></details>
             <div class="form-actions full-width"><button type="submit">Save</button></div>
           </form>
+          <section id="client-keys" aria-labelledby="applications-title">
+            <div class="section-heading"><h3 id="applications-title">API keys</h3><p id="key-policy"></p></div>
+
+            <div id="clients" class="client-list"></div>
+            <form id="add-client"><label>Name<input name="name" required maxlength="100" placeholder="My application" autocomplete="off"></label><div class="inline-form-action"><button type="submit">Create client key</button></div></form>
+            <div id="new-key" hidden><div class="key-heading"><strong>Client key</strong></div><p>Copy this key now. It is shown once.</p><input id="client-token" readonly aria-label="New client key"><button id="dismiss-key" type="button">Done</button></div>
+          </section>
         </section>
 
         <section hidden id="documentation" aria-labelledby="documentation-title">
-          <h2 id="documentation-title">Using Provider Router</h2>
-          <p>Provider Router exposes your selected provider accounts and models through a local OpenAI-compatible API. Applications run their own agent workflows and tools; Router performs model calls only.</p>
-          <h3>Get started</h3>
-          <ol><li>In Providers, add an account using your installed Codex login, direct Codex subscription credentials, or an OpenRouter key.</li><li>Refresh models, choose the models and allowed thinking efforts, save, and enable the provider.</li><li>Connect your application to the endpoint shown in API access. The default is <code>http://127.0.0.1:47831</code>; OpenAI SDK base URLs end in <code>/v1</code>.</li></ol>
-          <h3>Authentication and network settings</h3>
-          <p>New installations accept local calls without client API keys. API access lets you change the port and require keys. The API keys page creates separate revocable application keys, shown only once. Provider account credentials remain separate. Existing installations retain their authentication requirement after an upgrade.</p>
-          <p>SDKs that require a nonempty key can use <code>local</code> while authentication is disabled. When keys are required, send <code>Authorization: Bearer YOUR_CLIENT_KEY</code>. Remote access always requires keys and explicit TLS configuration. To connect a hosted website, add its exact HTTPS origin in API access under Approved website origins. Browser access is disabled until you approve an origin. Your browser may also ask for permission to reach local devices. Native applications and server clients do not need this browser approval.</p>
-          <h3>Endpoints</h3>
-          <dl><dt><code>GET /health</code></dt><dd>Public Router identity, protocol version, version, instance ID and whether authentication is required.</dd>
-          <dt><code>GET /v1/connectivity</code></dt><dd>Check authentication and whether at least one model is exposed, without making a provider call. Includes Router identity, ready, providers and models counts.</dd>
-          <dt><code>GET /v1/providers</code></dt><dd>Enabled provider connections and their allowed model capabilities, thinking efforts and token limits.</dd>
-          <dt><code>GET /v1/models</code></dt><dd>OpenAI model list. Each qualified ID is CONNECTION_UUID/MODEL_ID. The provider_router extension includes the connection name, provider, model capabilities and allowed thinking efforts.</dd>
-          <dt><code>POST /v1/chat/completions</code></dt><dd>OpenAI-compatible messages, tools, structured output and reasoning_effort.</dd>
-          <dt><code>POST /v1/responses</code></dt><dd>OpenAI-compatible input, function tools, structured output and reasoning.effort. Responses are not stored.</dd>
-          <dt><code>POST /v1/inference</code></dt><dd>Native protocol request with UUIDv7 request_id, connection_id, model, messages and tools.</dd>
-          <dt><code>POST /v1/inference/REQUEST_UUID/cancel</code></dt><dd>Cancel an active request owned by the same client. Without keys, local applications share a cancellation identity.</dd></dl>
-          <h3>Discover and call a model</h3>
-          <p>Run these commands in a terminal. Replace the endpoint if you changed its port, and add the authorization header when keys are required.</p>
-          <pre><code>curl http://127.0.0.1:47831/health
-curl http://127.0.0.1:47831/v1/providers
-curl http://127.0.0.1:47831/v1/models</code></pre>
-          <p>Copy a qualified model ID from the model list into MODEL_ID below. Choose a thinking effort listed for that model, or omit reasoning_effort to use its configured default.</p>
-          <pre><code>curl http://127.0.0.1:47831/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"MODEL_ID","messages":[{"role":"user","content":"Reply with hello."}]}'</code></pre>
-          <h3>Behavior and troubleshooting</h3>
-          <p>Streaming is finite SSE emitted after the provider completes. Only text input is supported in protocol version 1. Tool calls are returned to your application for execution. Models and thinking efforts outside your exposed selection are rejected before inference. Closing settings leaves the service running; Quit stops it.</p>
-          <p>Connection refused: open Router and check API access for its listening endpoint and startup error. HTTP 401: supply a current client key or disable key requirements for local access. HTTP 403: approve the exact website origin in API access, and connect using the configured loopback host. Browser network error: check site permissions for local network access, the approved origin and your API port. Unavailable model: refresh the provider catalogue, save your selection and enable the provider. HTTP 429: wait for existing inference requests to finish. Provider authentication failures require repairing the selected provider account.</p>
+          <h2 id="documentation-title">Connect an application</h2>
+          <p>Use your configured providers through a local OpenAI-compatible API. This guide walks from setup to a working model call. Requests below use a POSIX shell such as Bash, zsh or WSL.</p>
+          <h3>1. Choose a provider and expose models</h3>
+          <ol><li>Open Providers and choose a detected Codex installation, then Use this provider. If login is required, run <code>codex login</code> in that environment. Use Add provider for a custom Codex connection or an OpenRouter API key. Codex calls the subscription API directly using your existing login.</li><li>Models load automatically. Select the models and allowed thinking efforts, press Save, then enable the provider. Refresh retries model discovery. GPT-Reserve is excluded from Codex.</li><li>Open API access to find your endpoint. Client API keys are optional by default. If Require client API keys is enabled, create a key in the API keys section and copy it when shown; it is displayed only once. Each key can be revoked independently.</li></ol>
+          <h3>2. Set the endpoint and check the service</h3>
+          <p>Use the endpoint shown in API access if you changed the default port. In the same terminal, set:</p>
+          <pre><code>BASE="http://127.0.0.1:47831"
+KEY="local"
+# If client keys are required, replace local with your Router client key.</code></pre>
+          <p><code>local</code> is a placeholder accepted while key requirements are disabled. Your provider account credentials are never sent by client applications.</p>
+          <pre><code>curl  "$BASE/health" \
+  -H "Authorization: Bearer $KEY"</code></pre>
+          <p>Example response, HTTP 200:</p>
+          <pre><code>{
+  "name": "provider-router",
+  "protocol_version": 1,
+  "instance_id": "01a1c8e4-5a20-70fd-a550-f26fa4a5bae4",
+  "version": "0.1.0",
+  "authentication_required": false
+}</code></pre>
+          <p>The examples use a synthetic provider to show actual Router response shapes. IDs, model names, generated text, timestamps and token counts vary in your installation. No example represents a live provider response.</p>
+          <h3>3. Check readiness and discover models</h3>
+          <p>This check makes no upstream provider call. <code>ready: true</code> means at least one model is exposed; it does not verify the provider login or remaining usage.</p>
+          <pre><code>curl  "$BASE/v1/connectivity" \
+  -H "Authorization: Bearer $KEY"</code></pre>
+          <pre><code>{
+  "name": "provider-router",
+  "protocol_version": 1,
+  "instance_id": "01a1c8e4-5a20-70fd-a550-f26fa4a5bae4",
+  "version": "0.1.0",
+  "authentication_required": false,
+  "ready": true,
+  "providers": 1,
+  "models": 1
+}</code></pre>
+          <p>List the models available to your applications:</p>
+          <pre><code>curl  "$BASE/v1/models" \
+  -H "Authorization: Bearer $KEY"</code></pre>
+          <pre><code>{
+  "object": "list",
+  "data": [
+    {
+      "id": "019a1111-1111-7111-8111-111111111111/gpt-example",
+      "object": "model",
+      "created": 0,
+      "owned_by": "openai",
+      "provider_router": {
+        "connection_id": "019a1111-1111-7111-8111-111111111111",
+        "connection_name": "Personal Codex",
+        "provider": "codex",
+        "model": "gpt-example",
+        "method": "codex_http",
+        "name": "Example model",
+        "reasoning_efforts": [
+          "low",
+          "high"
+        ],
+        "default_reasoning_effort": "low",
+        "context_window": 32000,
+        "max_output_tokens": 4000,
+        "tools": true,
+        "structured_output": true,
+        "input_modalities": [
+          "text"
+        ]
+      }
+    }
+  ]
+}</code></pre>
+          <p>Copy an <code>id</code> from your response, including the connection UUID and slash. Set it once for the following requests:</p>
+          <pre><code>MODEL="019a1111-1111-7111-8111-111111111111/gpt-example"</code></pre>
+          <p>Replace that example value with your own model ID. A qualified ID selects the exact account even when several accounts expose the same model. The <code>provider_router</code> metadata lists allowed reasoning efforts, token limits, and support for tools and structured output.</p>
+          <h3>4. Send a Chat Completions request</h3>
+          <p>Read the answer from choices[0].message.content. The model uses its configured default thinking effort when none is supplied.</p>
+          <pre><code>curl  "$BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  --data @- &lt;&lt;JSON
+{
+  "model": "$MODEL",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Say hello."
+    }
+  ]
+}
+JSON</code></pre>
+          <p>Example response, HTTP 200:</p>
+          <pre><code>{
+  "id": "chatcmpl-01a1c8e4-5ac1-7d6f-ba67-559b6ade8cfa",
+  "object": "chat.completion",
+  "created": 1794371771,
+  "model": "019a1111-1111-7111-8111-111111111111/gpt-example",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello!"
+      },
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 3,
+    "total_tokens": 15
+  },
+  "provider_router": {
+    "provider": "codex",
+    "method": "codex_http",
+    "connection_id": "019a1111-1111-7111-8111-111111111111",
+    "model": "gpt-example",
+    "reasoning_effort": "low"
+  }
+}</code></pre>
+          <h3>5. Use the Responses API</h3>
+          <p>The same model is available through Responses. Read text from output message content items. The OpenAI SDK also provides output_text. Send the complete conversation history on every call; stored Responses and previous_response_id are unsupported.</p>
+          <pre><code>curl  "$BASE/v1/responses" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  --data @- &lt;&lt;JSON
+{
+  "model": "$MODEL",
+  "input": "Say hello.",
+  "store": false
+}
+JSON</code></pre>
+          <p>Example response, HTTP 200:</p>
+          <pre><code>{
+  "id": "resp_01a1c8e4-5adb-75a2-a27c-77a889714b8f",
+  "object": "response",
+  "created_at": 1794371771,
+  "status": "completed",
+  "error": null,
+  "incomplete_details": null,
+  "model": "019a1111-1111-7111-8111-111111111111/gpt-example",
+  "output": [
+    {
+      "type": "message",
+      "id": "msg_01a1c8e4-5adf-71cc-9214-0930df985ab2",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Hello!",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 3,
+    "total_tokens": 15,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "parallel_tool_calls": true,
+  "tool_choice": "auto",
+  "tools": [],
+  "metadata": {},
+  "store": false,
+  "provider_router": {
+    "provider": "codex",
+    "method": "codex_http",
+    "connection_id": "019a1111-1111-7111-8111-111111111111",
+    "model": "gpt-example",
+    "reasoning_effort": "low"
+  }
+}</code></pre>
+          <h3>6. Request a JSON answer</h3>
+          <p>Choose a model advertising structured_output: true. The content is a JSON string matching your schema. Router validates the answer before returning success.</p>
+          <pre><code>curl  "$BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  --data @- &lt;&lt;JSON
+{
+  "model": "$MODEL",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is seven plus seven? Return answer as a number."
+    }
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "sum",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}
+JSON</code></pre>
+          <p>Example response, HTTP 200:</p>
+          <pre><code>{
+  "id": "chatcmpl-01a1c8e4-5aee-78a8-9016-f9de2c5fd121",
+  "object": "chat.completion",
+  "created": 1794371771,
+  "model": "019a1111-1111-7111-8111-111111111111/gpt-example",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"answer\":14}"
+      },
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 3,
+    "total_tokens": 15
+  },
+  "provider_router": {
+    "provider": "codex",
+    "method": "codex_http",
+    "connection_id": "019a1111-1111-7111-8111-111111111111",
+    "model": "gpt-example",
+    "reasoning_effort": "low"
+  }
+}</code></pre>
+          <h3>7. Let your application execute a tool</h3>
+          <p>Choose a model advertising tools: true. Router returns function calls; your application executes them. A tool call does not run code inside Router. Generated arguments and call IDs can differ from this example.</p>
+          <pre><code>curl  "$BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  --data @- &lt;&lt;JSON
+{
+  "model": "$MODEL",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Bogota?"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "tool_choice": "required"
+}
+JSON</code></pre>
+          <p>Example response, HTTP 200:</p>
+          <pre><code>{
+  "id": "chatcmpl-01a1c8e4-5b48-77ad-b8f0-1aaf9f3c8c72",
+  "object": "chat.completion",
+  "created": 1794371771,
+  "model": "019a1111-1111-7111-8111-111111111111/gpt-example",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_example",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Bogota\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 3,
+    "total_tokens": 15
+  },
+  "provider_router": {
+    "provider": "codex",
+    "method": "codex_http",
+    "connection_id": "019a1111-1111-7111-8111-111111111111",
+    "model": "gpt-example",
+    "reasoning_effort": "low"
+  }
+}</code></pre>
+          <p>After executing the function, send its result with the original user message and the assistant tool call. Use the actual call ID and arguments from your previous response:</p>
+          <pre><code>curl  "$BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  --data @- &lt;&lt;JSON
+{
+  "model": "$MODEL",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Bogota?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_example",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Bogota\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_example",
+      "content": "{\"temperature_c\":18,\"conditions\":\"Cloudy\"}"
+    }
+  ]
+}
+JSON</code></pre>
+          <p>The next response has the same Chat Completions shape as step 4. Its text depends on the model and tool result.</p>
+          <h3>8. Stream a response</h3>
+          <p>Add stream: true and use curl -N to read Server-Sent Events. Router currently waits for provider inference to finish before emitting the stream; streaming does not provide live token-by-token latency.</p>
+          <pre><code>curl  -N "$BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  --data @- &lt;&lt;JSON
+{
+  "model": "$MODEL",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Say hello."
+    }
+  ],
+  "stream": true
+}
+JSON</code></pre>
+          <p>Example event stream:</p>
+          <pre><code>data: {"id":"chatcmpl-01a1c8e4-5b5a-74bd-9d57-ed7a830660af","object":"chat.completion.chunk","created":1794371771,"model":"019a1111-1111-7111-8111-111111111111/gpt-example","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null,"logprobs":null}],"provider_router":{"provider":"codex","method":"codex_http","connection_id":"019a1111-1111-7111-8111-111111111111","model":"gpt-example","reasoning_effort":"low"}}
+
+data: {"id":"chatcmpl-01a1c8e4-5b5a-74bd-9d57-ed7a830660af","object":"chat.completion.chunk","created":1794371771,"model":"019a1111-1111-7111-8111-111111111111/gpt-example","choices":[{"index":0,"delta":{"content":"Hello!"},"finish_reason":null,"logprobs":null}],"provider_router":{"provider":"codex","method":"codex_http","connection_id":"019a1111-1111-7111-8111-111111111111","model":"gpt-example","reasoning_effort":"low"}}
+
+data: {"id":"chatcmpl-01a1c8e4-5b5a-74bd-9d57-ed7a830660af","object":"chat.completion.chunk","created":1794371771,"model":"019a1111-1111-7111-8111-111111111111/gpt-example","choices":[{"index":0,"delta":{},"finish_reason":"stop","logprobs":null}],"provider_router":{"provider":"codex","method":"codex_http","connection_id":"019a1111-1111-7111-8111-111111111111","model":"gpt-example","reasoning_effort":"low"}}
+
+data: [DONE]</code></pre>
+          <p>Chat streams end with <code>data: [DONE]</code>. Responses streaming uses named events ending in <code>response.completed</code>. Disconnecting an active request cancels its local provider operation.</p>
+          <h3>9. Use the OpenAI JavaScript SDK</h3>
+          <p>Install the SDK in your client project with <code>pnpm add openai</code>. Set your actual model ID and, when required, client key:</p>
+          <pre><code>import OpenAI from 'openai';
+const client = new OpenAI({
+  baseURL: 'http://127.0.0.1:47831/v1',
+  apiKey: process.env.PROVIDER_ROUTER_KEY || 'local',
+});
+const answer = await client.chat.completions.create({
+  model: process.env.PROVIDER_ROUTER_MODEL,
+  messages: [{ role: 'user', content: 'Say hello.' }],
+});
+console.log(answer.choices[0].message.content);
+// Example: Hello!</code></pre>
+          <h3>10. Read errors and resolve connection problems</h3>
+          <p>This intentionally requests an unavailable model:</p>
+          <pre><code>curl  "$BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  --data @- &lt;&lt;JSON
+{
+  "model": "missing-model",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Say hello."
+    }
+  ]
+}
+JSON</code></pre>
+          <p>Actual example error, HTTP 404:</p>
+          <pre><code>{
+  "error": {
+    "code": "MODEL_UNAVAILABLE",
+    "message": "This model is not exposed by Provider Router.",
+    "type": "invalid_request_error",
+    "param": null
+  }
+}</code></pre>
+          <dl><dt>Connection refused</dt><dd>Open Router, check the API access endpoint and startup error, and confirm the port matches your client. Closing settings keeps Router running; Quit stops it.</dd><dt>HTTP 401</dt><dd>Send a current Router client API key, or disable key requirements in API access for local use. Provider keys and Codex credentials are separate.</dd><dt>HTTP 403 in a browser</dt><dd>Add the website’s exact HTTPS origin to Approved website origins in API access, without a path or trailing slash. Use the loopback endpoint and allow local-network access when your browser asks. Native clients do not need origin approval.</dd><dt>No models or unavailable model</dt><dd>In Providers, select a model, Save and enable its provider. Refresh discovery if needed, then copy a current qualified ID from /v1/models.</dd><dt>Invalid thinking effort or unsupported option</dt><dd>Use an effort listed in the model metadata, or omit it for the configured default. Only text input is supported. Images, audio, files, background Responses and stored conversation state are rejected.</dd><dt>HTTP 429 or provider failure</dt><dd>Wait for active requests to finish. For provider authentication failures, repair the selected account login. Router does not switch accounts or providers automatically.</dd></dl>
+          <h3>Additional endpoints and limits</h3>
+          <p>Inspect enabled provider connections and their upstream model IDs:</p>
+          <pre><code>curl  "$BASE/v1/providers" \
+  -H "Authorization: Bearer $KEY"</code></pre>
+          <pre><code>{
+  "protocol_version": 1,
+  "providers": [
+    {
+      "id": "019a1111-1111-7111-8111-111111111111",
+      "name": "Personal Codex",
+      "provider": "codex",
+      "method": "codex_http",
+      "models": [
+        {
+          "id": "gpt-example",
+          "name": "Example model",
+          "reasoning_efforts": [
+            "low",
+            "high"
+          ],
+          "default_reasoning_effort": "low",
+          "context_window": 32000,
+          "max_output_tokens": 4000,
+          "tools": true,
+          "structured_output": true,
+          "input_modalities": [
+            "text"
+          ]
+        }
+      ]
+    }
+  ]
+}</code></pre>
+          <p><code>POST /v1/inference</code> is the native protocol alternative. It requires UUIDv7 request_id and connection_id, an upstream model ID, messages and tools. Standard OpenAI clients can use the endpoints above.</p>
+          <p>To cancel by ID, send a UUIDv7 <code>X-Request-ID</code> header on inference and call <code>POST /v1/inference/REQUEST_ID/cancel</code> using the same client key. Success returns <code>{"cancelled":true}</code>. Without required keys, local applications share one cancellation identity.</p>
+          <p>The API listens only on this computer. Browser access is disabled until an origin is approved. Approve only websites you trust with your provider usage. Output budgets on Codex are checked after completion and do not cap upstream billing or subscription usage.</p>
         </section>
       </main>
     </div>
   </div>
-  <dialog id="provider-dialog" aria-labelledby="dialog-title"><div class="dialog-heading"><div><h2 id="dialog-title">Add provider</h2><p>Choose how to connect your account.</p></div><button id="close-provider" type="button" aria-label="Close dialog">×</button></div><div id="dialog-status" class="status-message" role="alert"></div>
-          <form id="add-connection">
-            <label>Name<input name="name" required maxlength="100" placeholder="Personal Codex" autocomplete="off"></label>
-            <label>Provider<select name="method"><option value="codex_cli">Codex · installed CLI login</option><option value="codex_http">Codex · direct subscription HTTP</option><option value="openrouter_http">OpenRouter · API key</option></select></label>
-            <label id="codex-environment-field" hidden>Environment<select name="environment"><option value="native">Windows</option><option value="wsl">WSL</option></select></label>
-            <label id="wsl-distribution-field" hidden>Distribution<select name="wsl_distribution"></select></label>
-            <label id="api-key-field" class="full-width">API key<input type="password" name="api_key" autocomplete="off" placeholder="OpenRouter key"></label>
-            <details id="codex-advanced-field" class="advanced-settings full-width"><summary>Advanced</summary><div class="form-grid"><label>Codex home<input name="codex_home" placeholder="Installed Codex default" autocomplete="off"></label><label>Codex executable<input name="executable" placeholder="codex" autocomplete="off"></label></div></details>
-            <div class="form-actions full-width"><button type="submit" class="primary">Add provider</button></div>
-          </form>
+  <dialog id="provider-dialog" aria-labelledby="dialog-title">
+    <div class="dialog-heading"><div><h2 id="dialog-title">Add provider</h2></div><button id="close-provider" type="button" aria-label="Close dialog">×</button></div>
+    <ol class="wizard-steps" aria-label="Setup progress"><li><button type="button" data-step="0"><span>1</span>Provider</button></li><li><button type="button" data-step="1"><span>2</span>Identity</button></li><li><button type="button" data-step="2"><span>3</span>Configuration</button></li></ol>
+    <div id="dialog-status" class="status-message" role="alert"></div>
+    <form id="add-connection">
+      <div class="wizard-panel" data-panel="0"><h3>Provider</h3><fieldset class="provider-options" aria-label="Provider"><label class="provider-option"><input type="radio" name="provider" value="codex" checked><img src="assets/codex.svg" alt=""><span>Codex</span></label><label class="provider-option"><input type="radio" name="provider" value="openrouter"><img src="assets/openrouter.svg" alt=""><span>OpenRouter</span></label></fieldset></div>
+      <div class="wizard-panel" data-panel="1" hidden><label class="wizard-setting">Label<span>Shown in the provider list.</span><input name="name" required maxlength="100" placeholder="e.g. Work" autocomplete="off"></label></div>
+      <div class="wizard-panel" data-panel="2" hidden><label id="connection-method-field" class="wizard-setting" hidden>Connection<span>Choose how to use your Codex account.</span><select name="method"><option value="codex_http">Direct subscription HTTP</option><option value="openrouter_http" hidden>OpenRouter API key</option></select></label>
+        <label id="codex-environment-field" class="wizard-setting" hidden>Environment<select name="environment"><option value="native">Windows</option><option value="wsl">WSL</option></select></label>
+        <label id="wsl-distribution-field" class="wizard-setting" hidden>Distribution<select name="wsl_distribution"></select></label>
+        <label id="api-key-field" class="wizard-setting">API key<span>Stored in your operating system credential vault.</span><input type="password" name="api_key" autocomplete="off" placeholder="OpenRouter key"></label>
+        <details id="codex-advanced-field" class="advanced-settings"><summary>Advanced</summary><div class="form-grid"><label>Codex home<input name="codex_home" placeholder="Installed Codex default" autocomplete="off"></label></div></details>
+      </div>
+      <div class="wizard-footer"><button id="wizard-back" type="button">Cancel</button><button id="wizard-next" type="button" class="primary">Next</button><button id="wizard-submit" type="submit" class="primary" hidden>Add instance</button></div>
+    </form>
   </dialog>
   <dialog id="confirm-dialog" aria-labelledby="confirm-title"><h2 id="confirm-title">Remove provider?</h2><p id="confirm-description"></p><div class="actions dialog-actions"><button id="cancel-confirm" type="button">Cancel</button><button id="accept-confirm" class="danger" type="button">Remove</button></div></dialog>
   <script src="settings.js"></script>

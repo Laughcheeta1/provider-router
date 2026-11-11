@@ -18,12 +18,12 @@ afterEach(async (): Promise<void> => { await Promise.all(listeners.splice(0).map
 // RevExt: 3
 async function fixture(infer?: ProviderAdapter['infer'], requireApiKey: boolean = true, browserOrigins: string[] = []): Promise<{ store: RouterStore; listener: ListeningRouter; token: string; client_id: string; connection: Connection; directory: string }> {
   const directory: string = await mkdtemp(path.join(os.tmpdir(), 'router-test-')); directories.push(directory);
-  const store: RouterStore = await RouterStore.open(directory, cipher);
-  const connection: Connection = { id: uuid7(), name: 'Personal subscription', method: 'codex_cli', exposed: true, models: [model] };
+  const store: RouterStore = await RouterStore.open(directory, cipher);  // RevExt: 59
+  const connection: Connection = { id: uuid7(), name: 'Personal subscription', method: 'codex_http', exposed: true, models: [model] };
   await store.saveConnection(connection, 'upstream-secret');
   const client: { id: string; token: string } = await store.createClient('Example application');
-  const adapter: ProviderAdapter = { models: async (): Promise<Model[]> => [model], infer: infer || (async (request: InferenceRequest): Promise<InferenceResult> => ({ request_id: request.request_id, content: '{"answer":42}', tool_calls: [], usage: { input_tokens: 20, output_tokens: 8 }, provider: 'codex', method: 'codex_cli', model: request.model, reasoning_effort: request.reasoning_effort })) };
-  const listener: ListeningRouter = await startRouter(store, { codex_cli: adapter, codex_http: adapter, openrouter_http: adapter }, { host: '127.0.0.1', port: 0, remote_enabled: false, trusted_proxy: false, require_api_key: requireApiKey, browser_origins: browserOrigins }, '0.1.0'); listeners.push(listener);
+  const adapter: ProviderAdapter = { models: async (): Promise<Model[]> => [model], infer: infer || (async (request: InferenceRequest): Promise<InferenceResult> => ({ request_id: request.request_id, content: '{"answer":42}', tool_calls: [], usage: { input_tokens: 20, output_tokens: 8 }, provider: 'codex', method: 'codex_http', model: request.model, reasoning_effort: request.reasoning_effort })) };
+  const listener: ListeningRouter = await startRouter(store, { codex_cli: adapter, codex_http: adapter, openrouter_http: adapter }, { host: '127.0.0.1', port: 0, require_api_key: requireApiKey, browser_origins: browserOrigins }, '0.1.0'); listeners.push(listener);
   return { store, listener, token: client.token, client_id: client.id, connection, directory };
 }
 // RevExt: 4
@@ -101,7 +101,7 @@ describe('Provider Router API', (): void => {
     const fresh: RouterStore = await RouterStore.open(directory, cipher);
     expect(fresh.publicState().network).toMatchObject({ host: '127.0.0.1', port: 47831, require_api_key: false });
     await fresh.saveNetwork(fresh.publicState().network);
-    const file: string = path.join(directory, 'settings.json');
+    const file: string = path.join(directory, 'settings.json');  // RevExt: 56
     const stored = JSON.parse(await readFile(file, 'utf8')) as { network: Record<string, unknown> };
     delete stored.network.require_api_key;
     await writeFile(file, JSON.stringify(stored));
@@ -112,7 +112,7 @@ describe('Provider Router API', (): void => {
     const observed: (string | undefined)[] = [];
     const { listener, connection, store } = await fixture(async (input: InferenceRequest): Promise<InferenceResult> => {
       observed.push(input.reasoning_effort);
-      return { request_id: input.request_id, content: 'Hello', tool_calls: [], usage: { input_tokens: 1, output_tokens: 1 }, provider: 'codex', method: 'codex_cli', model: input.model, reasoning_effort: input.reasoning_effort };
+      return { request_id: input.request_id, content: 'Hello', tool_calls: [], usage: { input_tokens: 1, output_tokens: 1 }, provider: 'codex', method: 'codex_http', model: input.model, reasoning_effort: input.reasoning_effort };
     }, false);
     await store.saveConnection({ ...connection, models: [{ ...model, reasoning_efforts: ['high'], default_reasoning_effort: 'high' }] });
     const input: InferenceRequest = request(connection); delete input.reasoning_effort;
@@ -152,7 +152,7 @@ describe('Provider Router API', (): void => {
     const { listener, token, connection } = await fixture();
     const payload: InferenceRequest = { ...request(connection), response_format: { type: 'json_schema', json_schema: { name: 'answer', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] } } } };
     expect((await post(listener.endpoint, token, payload)).status).toBe(502);
-    const toolsFixture = await fixture(async (input: InferenceRequest): Promise<InferenceResult> => ({ request_id: input.request_id, model: input.model, content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read_balance', arguments: '{"id":12}' } }], usage: { input_tokens: 1, output_tokens: 1 }, provider: 'codex', method: 'codex_cli' }));
+    const toolsFixture = await fixture(async (input: InferenceRequest): Promise<InferenceResult> => ({ request_id: input.request_id, model: input.model, content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read_balance', arguments: '{"id":12}' } }], usage: { input_tokens: 1, output_tokens: 1 }, provider: 'codex', method: 'codex_http' }));
     const toolRequest: InferenceRequest = { ...request(toolsFixture.connection), tools: [{ type: 'function', function: { name: 'read_balance', parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } } }] };
     expect((await post(toolsFixture.listener.endpoint, toolsFixture.token, toolRequest)).status).toBe(502);
   });  // RevExt: 23
@@ -190,7 +190,7 @@ describe('Provider Router API', (): void => {
     for (const messages of [[{ role: 'user', content: [{ type: 'text', text: 123 }] }], [{ role: 'tool', tool_call_id: 'unknown', content: 'Synthetic result' }]]) expect((await post(listener.endpoint, token, { ...request(connection), messages })).status).toBe(400);
     expect(calls).toBe(0);  // RevExt: 51
   });  // RevExt: 27
-});
+});  // RevExt: 61
 // RevExt: 15
 describe('local configuration writes', (): void => {
   it('leaves no partial connection when the credential vault rejects a key', async (): Promise<void> => {
@@ -203,18 +203,48 @@ describe('local configuration writes', (): void => {
   it('persists concurrent independent connection changes without losing either', async (): Promise<void> => {
     const directory: string = await mkdtemp(path.join(os.tmpdir(), 'router-write-test-')); directories.push(directory);
     const store: RouterStore = await RouterStore.open(directory, cipher);
-    const one: Connection = { id: uuid7(), name: 'One', method: 'codex_cli', exposed: false, models: [model] };
+    const one: Connection = { id: uuid7(), name: 'One', method: 'codex_http', exposed: false, models: [model] };
     const two: Connection = { id: uuid7(), name: 'Two', method: 'codex_http', exposed: false, models: [model] };
     await Promise.all([store.saveConnection(one), store.saveConnection(two)]);
     expect((await RouterStore.open(directory, cipher)).connections().map((item: Connection): string => item.name)).toEqual(['One', 'Two']);
   });  // RevExt: 29
-});
+});  // RevExt: 62
 // RevExt: 17
-describe('remote configuration', (): void => {
-  it('requires explicit remote mode and TLS or a loopback trusted HTTPS proxy', (): void => {
-    expect((): void => validateNetwork({ host: '0.0.0.0', port: 47831, remote_enabled: false, trusted_proxy: false, require_api_key: true })).toThrow();
-    expect((): void => validateNetwork({ host: '0.0.0.0', port: 47831, remote_enabled: true, trusted_proxy: false, require_api_key: true })).toThrow();
-    expect((): void => validateNetwork({ host: '0.0.0.0', port: 47831, remote_enabled: true, trusted_proxy: true, require_api_key: true, public_endpoint: 'https://providers.example' })).toThrow();
-    expect((): void => validateNetwork({ host: '127.0.0.1', port: 47831, remote_enabled: true, trusted_proxy: true, require_api_key: true, public_endpoint: 'https://providers.example' })).not.toThrow();
+describe('local-only configuration', (): void => {
+  it('rejects network listeners and accepts loopback listeners', (): void => {
+    for (const host of ['0.0.0.0', '::', '192.168.1.10', 'router.example']) {
+      expect((): void => validateNetwork({ host, port: 47831, require_api_key: true })).toThrow('only supports loopback');
+    }  // RevExt: 54
+    for (const host of ['127.0.0.1', '::1', 'localhost']) {
+      expect((): void => validateNetwork({ host, port: 47831, require_api_key: false })).not.toThrow();
+    }  // RevExt: 55
   });  // RevExt: 30
-});
+});  // RevExt: 63
+// RevExt: 52
+  it('retires saved remote settings without losing local configuration or client keys', async (): Promise<void> => {
+    const { store, directory, token } = await fixture();
+    const file: string = path.join(directory, 'settings.json');  // RevExt: 57
+    const saved: Record<string, unknown> = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
+    saved.network = { host: '0.0.0.0', port: 48901, require_api_key: true, browser_origins: ['https://app.example'], remote_enabled: true, trusted_proxy: true, public_endpoint: 'https://router.example', tls_certificate: '/missing/cert', tls_key: '/missing/key' };
+    await writeFile(file, JSON.stringify(saved));
+    const reopened: RouterStore = await RouterStore.open(directory, cipher);
+    expect(reopened.publicState().network).toEqual({ host: '127.0.0.1', port: 48901, require_api_key: true, browser_origins: ['https://app.example'] });
+    expect(reopened.authenticate(token)?.id).toBe(store.authenticate(token)?.id);
+    await expect(reopened.saveNetwork({ host: '0.0.0.0', port: 48901, require_api_key: true })).rejects.toThrow();
+  });  // RevExt: 53
+// RevExt: 58
+it('removes GPT-Reserve from saved Codex selections while preserving OpenRouter selections', async (): Promise<void> => {
+  const directory: string = await mkdtemp(path.join(os.tmpdir(), 'router-model-selection-')); directories.push(directory);
+  const store: RouterStore = await RouterStore.open(directory, cipher);  // RevExt: 60
+  const reserve: Model = { ...model, id: 'gpt-reserve', name: 'GPT-Reserve' };
+  for (const method of ['codex_cli', 'codex_http', 'openrouter_http'] as const) {
+    await store.saveConnection({ id: uuid7(), name: method, method, exposed: true, models: [reserve, model] });
+  }
+  const saved: Connection[] = (await RouterStore.open(directory, cipher)).connections();
+  expect(saved.map((connection: Connection): string[] => connection.models.map((entry: Model): string => entry.id))).toEqual([[model.id], [model.id], ['gpt-reserve', model.id]]);
+  const file: string = path.join(directory, 'settings.json');
+  const legacy: Record<string, unknown> = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
+  legacy.connections = saved.map((connection: Connection): Connection => ({ ...connection, models: [reserve, model] }));
+  await writeFile(file, JSON.stringify(legacy));
+  expect((await RouterStore.open(directory, cipher)).connections().map((connection: Connection): number => connection.models.length)).toEqual([1, 1, 2]);
+});  // RevExt: 64

@@ -10,10 +10,7 @@ export const networkSchema = z.object({
       return origin.origin === value && (origin.protocol === 'https:' || (origin.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)));
     } catch { return false; }
   }, 'Use an exact HTTPS website origin, or an HTTP loopback development origin, without a path or trailing slash.')).max(50).optional(),
-  remote_enabled: z.boolean().default(false),
-  host: z.string().default('127.0.0.1'),
-  tls_certificate: z.string().optional(), tls_key: z.string().optional(),
-  trusted_proxy: z.boolean().default(false), public_endpoint: z.string().url().optional(),
+  host: z.string().refine((host: string): boolean => ['127.0.0.1', '::1', 'localhost'].includes(host), 'Use a loopback host: 127.0.0.1, ::1 or localhost.').default('127.0.0.1'),
 });
 export type NetworkSettings = z.infer<typeof networkSchema>;
 export const clientSchema = z.object({ id: uuidSchema, name: z.string().min(1).max(100), token_hash: z.string(), created_at: z.string() });

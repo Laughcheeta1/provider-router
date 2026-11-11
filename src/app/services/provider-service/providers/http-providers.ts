@@ -1,5 +1,6 @@
 /** Stateless HTTP inference adapters; application tools are never executed here. */
 import { z } from 'zod';
+import { resolveWslCredentialHome } from './wsl-codex.ts';
 import { CodexAuth, ExistingCodexCredentials, codexHome } from './codex-auth.ts';
 import { codexCatalog } from './codex-cli.ts';
 import { RouterError, toolCallSchema, type Connection, type InferenceRequest, type InferenceResult, type Message, type Model, type ProviderAdapter, type ToolCall } from '../../../common/schemas/contracts.ts';
@@ -95,7 +96,9 @@ export class CodexHttpAdapter implements ProviderAdapter {
   }
 
   private async request(connection: Connection, route: string, init: RequestInit): Promise<Response> {
-    const home: string = codexHome(connection.codex_home);
+    const home: string = connection.environment === 'wsl'
+      ? await resolveWslCredentialHome(connection.wsl_distribution!, connection.codex_home)
+      : codexHome(connection.codex_home);
     let auth: CodexAuth | undefined = this.accounts.get(home);
     if (!auth) { auth = this.authFactory(home); this.accounts.set(home, auth); }
     for (const force of [false, true]) {

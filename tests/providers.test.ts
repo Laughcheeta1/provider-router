@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { CodexAuth, ExistingCodexCredentials, codexAuthSettings, type CodexCredentials, type CredentialStore } from '../src/app/services/provider-service/providers/codex-auth.ts';
 import { CodexHttpAdapter, OpenRouterAdapter } from '../src/app/services/provider-service/providers/http-providers.ts';
-import { CodexCliAdapter } from '../src/app/services/provider-service/providers/codex-cli.ts';
+import { CodexCliAdapter, codexCatalog } from '../src/app/services/provider-service/providers/codex-cli.ts';
 import { uuid7 } from '../src/app/common/identity/identity.ts';
 import type { Connection, InferenceRequest, InferenceResult } from '../src/app/common/schemas/contracts.ts';
 // RevExt: 1
@@ -79,7 +79,7 @@ describe('Codex subscription credentials', (): void => {
     expect(await codexAuthSettings(home)).toEqual({ store: 'keyring', secret_auth_storage: true });
     await expect(new ExistingCodexCredentials(home).load()).rejects.toMatchObject({ code: 'CODEX_STORAGE_UNSUPPORTED' });
   });  // RevExt: 21
-});
+});  // RevExt: 33
 // RevExt: 9
 describe('HTTP inference adapters', (): void => {
   it('uses published reasoning options and keeps mandatory reasoning enabled in model discovery', async (): Promise<void> => {
@@ -124,7 +124,7 @@ describe('HTTP inference adapters', (): void => {
     await writeFile(path.join(directory, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'synthetic-model', context_window: 32000 }] }));
     const previous: string | undefined = process.env.ROUTER_TEST_UNRELATED_SECRET; process.env.ROUTER_TEST_UNRELATED_SECRET = 'must-not-inherit';
     try {
-      const target: Connection = { ...connection('codex_cli'), executable, codex_home: directory };
+      const target: Connection = { ...connection('codex_http'), executable, codex_home: directory };
       const result: InferenceResult = await new CodexCliAdapter().infer(request(target), target, AbortSignal.timeout(3000));
       expect(result.tool_calls).toMatchObject([{ function: { name: 'read_balance' } }]);
       const captured: { args: string[]; key?: string; openai?: string } = JSON.parse(await readFile(capture, 'utf8'));
@@ -134,4 +134,12 @@ describe('HTTP inference adapters', (): void => {
       const working: string = captured.args[captured.args.indexOf('-C') + 1]!; await expect(readFile(path.join(working, 'system.md'))).rejects.toThrow();
     } finally { if (previous === undefined) delete process.env.ROUTER_TEST_UNRELATED_SECRET; else process.env.ROUTER_TEST_UNRELATED_SECRET = previous; }
   });  // RevExt: 27
-});
+});  // RevExt: 34
+// RevExt: 32
+it('omits GPT-Reserve from the Codex catalog while retaining ordinary models', (): void => {
+  const models = codexCatalog({ models: [
+    { slug: 'gpt-reserve', display_name: 'GPT-Reserve', context_window: 32000 },
+    { slug: 'gpt-example', display_name: 'GPT Example', context_window: 64000 },
+  ] });
+  expect(models.map((model): string => model.id)).toEqual(['gpt-example']);
+});  // RevExt: 35

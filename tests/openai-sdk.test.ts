@@ -20,14 +20,14 @@ const model: Model = { id: 'example/model', name: 'Synthetic model', reasoning_e
 beforeEach(async (): Promise<void> => {
   directory = await mkdtemp(path.join(os.tmpdir(), 'router-sdk-test-'));
   store = await RouterStore.open(directory, { encrypt: (value: string): Buffer => Buffer.from(value), decrypt: (value: Buffer): string => value.toString() });
-  const connection: Connection = { id: uuid7(), name: 'Synthetic provider', method: 'codex_cli', exposed: true, models: [model] };
+  const connection: Connection = { id: uuid7(), name: 'Synthetic provider', method: 'codex_http', exposed: true, models: [model] };
   await store.saveConnection(connection); selected = `${connection.id}/${model.id}`;
   const key: { id: string; token: string } = await store.createClient('Official SDK test');
   const adapter: ProviderAdapter = { models: async (): Promise<Model[]> => [model], infer: async (request: InferenceRequest): Promise<InferenceResult> => {
     lastRequest = request;
-    return { request_id: request.request_id, model: request.model, content: request.tools.length ? '' : '{"answer":42}', tool_calls: request.tools.length ? [{ id: 'call-synthetic', type: 'function', function: { name: 'read_balance', arguments: '{"id":"a"}' } }] : [], usage: { input_tokens: 21, output_tokens: 8 }, provider: 'codex', method: 'codex_cli', reasoning_effort: request.reasoning_effort };
+    return { request_id: request.request_id, model: request.model, content: request.tools.length ? '' : '{"answer":42}', tool_calls: request.tools.length ? [{ id: 'call-synthetic', type: 'function', function: { name: 'read_balance', arguments: '{"id":"a"}' } }] : [], usage: { input_tokens: 21, output_tokens: 8 }, provider: 'codex', method: 'codex_http', reasoning_effort: request.reasoning_effort };
   } };
-  listener = await startRouter(store, { codex_cli: adapter, codex_http: adapter, openrouter_http: adapter }, { host: '127.0.0.1', port: 0, remote_enabled: false, trusted_proxy: false, require_api_key: true }, '0.1.0');
+  listener = await startRouter(store, { codex_cli: adapter, codex_http: adapter, openrouter_http: adapter }, { host: '127.0.0.1', port: 0, require_api_key: true }, '0.1.0');
   client = new OpenAI({ apiKey: key.token, baseURL: `${listener.endpoint}/v1`, maxRetries: 0 }); lastRequest = null;
 });
 afterEach(async (): Promise<void> => { await listener.close(); await rm(directory, { recursive: true, force: true }); });
@@ -35,8 +35,8 @@ afterEach(async (): Promise<void> => { await listener.close(); await rm(director
 describe('OpenAI SDK compatibility', (): void => {
   it('uses the official SDK with a placeholder key when local authentication is disabled', async (): Promise<void> => {
     await listener.close();
-    const adapter: ProviderAdapter = { models: async (): Promise<Model[]> => [model], infer: async (input: InferenceRequest): Promise<InferenceResult> => ({ request_id: input.request_id, model: input.model, content: 'Hello', tool_calls: [], usage: { input_tokens: 1, output_tokens: 1 }, provider: 'codex', method: 'codex_cli' }) };
-    listener = await startRouter(store, { codex_cli: adapter, codex_http: adapter, openrouter_http: adapter }, { host: '127.0.0.1', port: 0, require_api_key: false, remote_enabled: false, trusted_proxy: false }, '0.1.0');
+    const adapter: ProviderAdapter = { models: async (): Promise<Model[]> => [model], infer: async (input: InferenceRequest): Promise<InferenceResult> => ({ request_id: input.request_id, model: input.model, content: 'Hello', tool_calls: [], usage: { input_tokens: 1, output_tokens: 1 }, provider: 'codex', method: 'codex_http' }) };
+    listener = await startRouter(store, { codex_cli: adapter, codex_http: adapter, openrouter_http: adapter }, { host: '127.0.0.1', port: 0, require_api_key: false }, '0.1.0');
     const local: OpenAI = new OpenAI({ apiKey: 'local', baseURL: `${listener.endpoint}/v1`, maxRetries: 0 });
     const models = await local.models.list(); expect(models.data[0]?.id).toBe(selected);
     const result = await local.chat.completions.create({ model: selected, messages: [{ role: 'user', content: 'Say hello.' }] });
@@ -80,7 +80,7 @@ describe('OpenAI SDK compatibility', (): void => {
   });  // RevExt: 17
 // RevExt: 10
   it('rejects ambiguous models and unsupported SDK options with standard errors before inference', async (): Promise<void> => {
-    await store.saveConnection({ id: uuid7(), name: 'Another account', method: 'codex_cli', exposed: true, models: [model] });
+    await store.saveConnection({ id: uuid7(), name: 'Another account', method: 'codex_http', exposed: true, models: [model] });
     await expect(client.chat.completions.create({ model: model.id, messages: [{ role: 'user', content: 'Synthetic question' }] })).rejects.toMatchObject({ status: 400, code: 'MODEL_AMBIGUOUS', type: 'invalid_request_error' });
     await expect(client.chat.completions.create({ model: selected, messages: [{ role: 'user', content: 'Synthetic question' }], temperature: 0.5 })).rejects.toMatchObject({ status: 400, code: 'INVALID_REQUEST', type: 'invalid_request_error' });
     expect(lastRequest).toBeNull();

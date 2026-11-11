@@ -4,7 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { RouterError } from '../../../common/schemas/contracts.ts';
-
+// RevExt: 1
 export interface WslCommandResult { readonly code: number; readonly stdout: Buffer }
 export type WslRunner = (args: readonly string[]) => Promise<WslCommandResult>;
 export interface WslCodexContext {
@@ -13,13 +13,13 @@ export interface WslCodexContext {
   readonly catalogDirectory: string;
   readonly executable: string;
   readonly searchPath: string;
-}
+}  // RevExt: 12
 export interface WslCodexLaunch {
   readonly executable: string;
   readonly args: string[];
   cancel(): Promise<void>;
-}
-
+}  // RevExt: 13
+// RevExt: 2
 // Only this fixed script runs in a shell. Connection values remain separate argv values.
 const inspectScript: string = [
   'set -eu',
@@ -35,14 +35,14 @@ const inspectScript: string = [
   'home=$(realpath -m -- "$home")',
   'printf "%s\\0%s\\0%s\\0" "$home" "$cli" "$PATH"',
 ].join('\n');
-
+// RevExt: 3
 /** Decode wsl.exe's UTF-16 distribution list without treating user names as executable text. */
 export function decodeWslDistributions(output: Buffer): string[] {
   const text: string = output.includes(0) ? output.toString('utf16le') : output.toString('utf8');
   return [...new Set(text.replace(/^\uFEFF/, '').split(/\r?\n/).map((name: string): string => name.trim())
     .filter((name: string): boolean => Boolean(name) && validDistribution(name)))];
-}
-
+}  // RevExt: 14
+// RevExt: 4
 /** Discover Windows-native WSL installations; this does not enable a Linux distribution target. */
 export async function listWslDistributions(platform: NodeJS.Platform = process.platform, run: WslRunner = runWsl): Promise<string[]> {
   if (platform !== 'win32') return [];
@@ -50,18 +50,35 @@ export async function listWslDistributions(platform: NodeJS.Platform = process.p
     const result: WslCommandResult = await run(['--list', '--quiet']);
     return result.code === 0 ? decodeWslDistributions(result.stdout) : [];
   } catch { return []; }
-}
-
+}  // RevExt: 15
+// RevExt: 5
+/** Resolve credentials without launching or requiring a Codex inference process. */
+export async function resolveWslCredentialHome(
+  distribution: string,  // RevExt: 22
+  home?: string,
+  options: { readonly platform?: NodeJS.Platform; readonly run?: WslRunner } = {},
+): Promise<string> {
+  if ((options.platform ?? process.platform) !== 'win32') throw new RouterError('WSL_WINDOWS_ONLY', 'WSL connections require Windows.');  // RevExt: 24
+  if (!validDistribution(distribution)) throw new RouterError('WSL_DISTRIBUTION_INVALID', 'Choose an installed WSL distribution.');  // RevExt: 26
+  const result: WslCommandResult = await (options.run ?? runWsl)([  // RevExt: 28
+    '--distribution', distribution, '--exec', '/bin/sh', '-lc',
+    'set -eu; realpath -m -- "${1:-${CODEX_HOME:-$HOME/.codex}}"', 'provider-router', home ?? '',
+  ]);  // RevExt: 30
+  const directory: string = result.stdout.toString('utf8').trim();
+  if (result.code !== 0 || !directory.startsWith('/') || /[\r\n\0\\]/.test(directory)) throw new RouterError('WSL_PATH_INVALID', 'The WSL Codex credential directory could not be resolved.', 503);
+  return path.win32.join('\\\\wsl.localhost', distribution, directory.replaceAll('/', '\\'));
+}  // RevExt: 16
+// RevExt: 6
 /** Resolve the selected distribution's CLI and credential directory in its own environment. */
 export async function resolveWslCodex(
-  distribution: string,
+  distribution: string,  // RevExt: 23
   options: { readonly executable?: string; readonly codexHome?: string; readonly platform?: NodeJS.Platform; readonly run?: WslRunner } = {},
 ): Promise<WslCodexContext> {
-  if ((options.platform ?? process.platform) !== 'win32') throw new RouterError('WSL_WINDOWS_ONLY', 'WSL connections require Windows.');
-  if (!validDistribution(distribution)) throw new RouterError('WSL_DISTRIBUTION_INVALID', 'Choose an installed WSL distribution.');
-  const result: WslCommandResult = await (options.run ?? runWsl)([
+  if ((options.platform ?? process.platform) !== 'win32') throw new RouterError('WSL_WINDOWS_ONLY', 'WSL connections require Windows.');  // RevExt: 25
+  if (!validDistribution(distribution)) throw new RouterError('WSL_DISTRIBUTION_INVALID', 'Choose an installed WSL distribution.');  // RevExt: 27
+  const result: WslCommandResult = await (options.run ?? runWsl)([  // RevExt: 29
     '--distribution', distribution, '--exec', '/bin/sh', '-lc', inspectScript, 'provider-router', options.executable ?? '', options.codexHome ?? '',
-  ]);
+  ]);  // RevExt: 31
   const fields: string[] = result.stdout.toString('utf8').split('\0');
   if (result.code !== 0 || fields.length < 4 || !fields[0]?.startsWith('/') || !fields[1]?.startsWith('/')
     || !fields[2] || fields.slice(0, 3).some((field: string): boolean => /[\r\n]/.test(field))) {
@@ -74,8 +91,8 @@ export async function resolveWslCodex(
     executable: fields[1]!,
     searchPath: `${path.posix.dirname(fields[1]!)}:${fields[2]!}`,
   };
-}
-
+}  // RevExt: 17
+// RevExt: 7
 /** Translate only temporary input/output paths, leaving model names and arbitrary prompt text untouched. */
 export function translateWslArguments(args: readonly string[], windowsDirectory: string, linuxDirectory: string): string[] {
   if (!linuxDirectory.startsWith('/') || /[\r\n\0]/.test(linuxDirectory)) throw new RouterError('WSL_PATH_INVALID', 'The WSL temporary directory could not be resolved.');
@@ -88,8 +105,8 @@ export function translateWslArguments(args: readonly string[], windowsDirectory:
     if (typeof value !== 'string') throw new RouterError('WSL_PATH_INVALID', 'The Codex temporary path is invalid.');
     return `${config[1]}=${JSON.stringify(replace(value))}`;
   });
-}
-
+}  // RevExt: 18
+// RevExt: 8
 /** Keep a Linux process-group receipt so Windows cancellation also terminates Codex inside WSL. */
 export async function prepareWslCodex(
   context: WslCodexContext,
@@ -115,8 +132,8 @@ export async function prepareWslCodex(
       return cancellation;
     },
   };
-}
-
+}  // RevExt: 19
+// RevExt: 9
 /** Terminate only the Linux group created for this request, including a short startup race. */
 async function cancelWslGroup(distribution: string, groupFile: string, run: WslRunner): Promise<void> {
   let pid: string = '';
@@ -130,8 +147,8 @@ async function cancelWslGroup(distribution: string, groupFile: string, run: WslR
   await run(['--distribution', distribution, '--exec', '/bin/kill', '-TERM', '--', `-${pid}`]);
   await delay(150);
   await run(['--distribution', distribution, '--exec', '/bin/kill', '-KILL', '--', `-${pid}`]);
-}
-
+}  // RevExt: 20
+// RevExt: 10
 /** Bound WSL discovery commands and suppress upstream diagnostics that may contain local information. */
 async function runWsl(args: readonly string[]): Promise<WslCommandResult> {
   return new Promise<WslCommandResult>((resolve, reject): void => {
@@ -145,6 +162,6 @@ async function runWsl(args: readonly string[]): Promise<WslCommandResult> {
     child.stdin.end();
     child.once('close', (code: number | null): void => { clearTimeout(deadline); resolve({ code: bytes > 1024 * 1024 ? 1 : code ?? 1, stdout: Buffer.concat(chunks) }); });
   });
-}
-
+}  // RevExt: 21
+// RevExt: 11
 function validDistribution(value: string): boolean { return /^(?!\.{1,2}$)[A-Za-z0-9][A-Za-z0-9._ ()-]{0,127}$/.test(value); }

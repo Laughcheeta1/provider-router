@@ -4,7 +4,7 @@ import type { SettingsBridge, SettingsCommand, SettingsReply, SettingsSnapshot }
 // RevExt: 1
 declare global { interface Window { providerRouter: SettingsBridge } }
 const status: HTMLElement = element('status');
-const methods: Record<Method, string> = { codex_cli: 'Codex · CLI', codex_http: 'Codex · Direct', openrouter_http: 'OpenRouter' };
+const methods: Record<Method, string> = { codex_cli: 'Codex · Direct', codex_http: 'Codex · Direct', openrouter_http: 'OpenRouter' };
 let snapshot: SettingsSnapshot | null = null;
 let selectedId: string | null = null;
 let pending: boolean = false;
@@ -43,51 +43,77 @@ async function refresh(): Promise<void> {
 // RevExt: 5
 /** Keep selection in the renderer while persisted connection identity stays unchanged. */
 function renderProviders(): void {
-  const connections: readonly Connection[] = snapshot?.connections ?? [];
+  const saved: readonly Connection[] = snapshot?.connections ?? [];
+  const detected = (snapshot?.detected_providers ?? []).filter((candidate): boolean => !saved.some((connection: Connection): boolean => connection.method === candidate.connection.method && (connection.environment ?? 'native') === (candidate.connection.environment ?? 'native') && connection.wsl_distribution === candidate.connection.wsl_distribution && !connection.codex_home && !connection.executable));
+  const connections: readonly Connection[] = [...saved, ...detected.map((candidate): Connection => candidate.connection)];
   if (!connections.some((connection: Connection): boolean => connection.id === selectedId)) selectedId = connections[0]?.id ?? null;
   const list: HTMLElement = element('connections'); list.replaceChildren();
   for (const connection of connections) {
-    const row: HTMLButtonElement = document.createElement('button'); row.type = 'button'; row.className = 'provider-row';
-    row.setAttribute('aria-pressed', String(connection.id === selectedId));
-    const icon: HTMLElement = text('span', connection.method === 'openrouter_http' ? '↗' : '◈', 'provider-icon');
-    const name: HTMLElement = text('span', '', 'provider-label'); name.append(text('strong', connection.name), text('small', methods[connection.method]));
-    row.append(icon, name, text('span', connection.exposed ? 'Enabled' : 'Disabled', connection.exposed ? 'provider-state enabled' : 'provider-state'));
-    row.onclick = (): void => { selectedId = connection.id; renderProviders(); }; list.append(row);
+    const row: HTMLElement = text('div', '', 'provider-row');
+    const select: HTMLButtonElement = document.createElement('button'); select.type = 'button'; select.className = 'provider-select'; select.setAttribute('aria-label', `Select ${connection.name}`);
+    select.setAttribute('aria-pressed', String(connection.id === selectedId)); row.dataset.selected = String(connection.id === selectedId);
+    const icon: HTMLImageElement = document.createElement('img'); icon.className = 'provider-icon'; icon.alt = ''; icon.src = connection.method === 'openrouter_http' ? 'assets/openrouter.svg' : 'assets/codex.svg';
+    const name: HTMLElement = text('span', '', 'provider-label'); name.append(text('strong', connection.name), text('small', detected.find((candidate): boolean => candidate.connection.id === connection.id)?.detail ?? (connection.exposed ? 'Enabled' : 'Disabled')));
+    select.append(icon, name);
+    select.onclick = (): void => { selectedId = connection.id; renderProviders(); };
+    const toggle: HTMLInputElement = document.createElement('input'); toggle.type = 'checkbox'; toggle.role = 'switch'; toggle.checked = connection.exposed; toggle.setAttribute('aria-label', `Enable ${connection.name}`);
+    toggle.disabled = detected.some((candidate): boolean => candidate.connection.id === connection.id && candidate.status !== 'ready');
+    toggle.onchange = (): void => { void perform(async (): Promise<void> => { await invoke({ type: 'save_connection', connection: { ...connection, exposed: toggle.checked } }); await refresh(); }); };
+    row.append(select, toggle); list.append(row);
   }  // RevExt: 25
   const add: HTMLButtonElement = document.createElement('button'); add.type = 'button'; add.className = 'add-provider-row'; add.textContent = '+  Add provider'; add.onclick = openProviderDialog; list.append(add);
-  const detail: HTMLElement = element('provider-detail'); detail.replaceChildren();
+  const editor: HTMLElement = element('provider-detail'); editor.replaceChildren();
+  const detail: HTMLElement = text('div', '', 'provider-detail-content'); editor.append(detail);
   const connection: Connection | undefined = connections.find((current: Connection): boolean => current.id === selectedId);
   if (!connection) { const empty: HTMLElement = text('div', '', 'empty-state'); empty.append(text('span', '◈', 'empty-icon'), text('h3', 'No providers configured'), text('p', 'Add a provider to make its models available through your API.')); detail.append(empty); return; }
   const header: HTMLElement = text('div', '', 'provider-detail-heading');
   const title: HTMLElement = text('div', ''); title.append(text('h2', connection.name), text('p', methods[connection.method]));
-  const enabled: HTMLInputElement = document.createElement('input'); enabled.type = 'checkbox'; enabled.role = 'switch'; enabled.checked = connection.exposed; enabled.setAttribute('aria-label', 'Enable provider');
-  enabled.onchange = (): void => { void perform(async (): Promise<void> => { await invoke({ type: 'save_connection', connection: { ...connection, exposed: enabled.checked } }); await refresh(); }); };
-  header.append(title, enabled); detail.append(header);
-  const configuration: HTMLElement = text('div', '', 'detail-section'); configuration.append(text('h3', 'Configuration'));
+  header.append(title); detail.append(header);
+  const candidate = detected.find((current): boolean => current.connection.id === connection.id);
+  if (candidate) {
+    const setup: HTMLElement = text('div', '', 'detail-section'); setup.append(text('h3', 'Setup'), text('p', candidate.detail));
+    if (candidate.status === 'ready') setup.append(button('Use this provider', async (): Promise<void> => { await invoke({ type: 'save_connection', connection }); await refresh(); }));
+    else setup.append(text('p', candidate.status === 'login_required' ? 'Run codex login in this environment, then refresh provider status.' : 'Install Codex in this environment, then refresh provider status.'));
+    detail.append(setup);
+    return;
+  }  // RevExt: 28
+  const configuration: HTMLElement = text('div', '', 'detail-section configuration-section');
   const form: HTMLFormElement = document.createElement('form'); form.className = 'provider-configuration';
-  const label: HTMLLabelElement = document.createElement('label'); label.textContent = 'Label'; const name: HTMLInputElement = document.createElement('input'); name.name = 'name'; name.value = connection.name; name.required = true; name.maxLength = 100; label.append(name);
+  const label: HTMLLabelElement = document.createElement('label'); label.textContent = 'Display name'; const name: HTMLInputElement = document.createElement('input'); name.name = 'name'; name.value = connection.name; name.required = true; name.maxLength = 100; label.append(name);
   form.append(label);
-  for (const field of connection.method === 'openrouter_http' ? ['api_key'] : ['codex_home', 'executable']) {
-    const fieldLabel: HTMLLabelElement = document.createElement('label'); fieldLabel.textContent = field === 'api_key' ? 'Replace provider API key' : field === 'codex_home' ? 'Codex home' : 'Codex executable';
+  const advanced: HTMLDetailsElement = document.createElement('details'); advanced.className = 'advanced-settings provider-runtime'; advanced.append(text('summary', 'Advanced connection settings'));
+  for (const field of connection.method === 'openrouter_http' ? ['api_key'] : ['codex_home']) {
+    const fieldLabel: HTMLLabelElement = document.createElement('label'); fieldLabel.textContent = field === 'api_key' ? 'Replace provider API key' : 'Codex home';
     const value: HTMLInputElement = document.createElement('input'); value.name = field; value.autocomplete = 'off';
-    value.type = field === 'api_key' ? 'password' : 'text'; value.value = field === 'codex_home' ? connection.codex_home ?? '' : field === 'executable' ? connection.executable ?? '' : ''; fieldLabel.append(value); form.append(fieldLabel);
+    value.placeholder = field === 'codex_home' ? 'Default Codex home' : 'Enter a new API key'; value.type = field === 'api_key' ? 'password' : 'text'; value.value = field === 'codex_home' ? connection.codex_home ?? '' : ''; fieldLabel.append(value); if (field === 'api_key') form.append(fieldLabel); else advanced.append(fieldLabel);
   }  // RevExt: 26
-  const save: HTMLButtonElement = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save'; form.append(save);
-  form.onsubmit = (event: SubmitEvent): void => { event.preventDefault(); void perform(async (): Promise<void> => { await invoke({ type: 'save_connection', connection: { ...connection, name: name.value.trim(), ...(connection.method !== 'openrouter_http' ? { codex_home: input(form, 'codex_home').value.trim() || undefined, executable: input(form, 'executable').value.trim() || undefined } : {}) }, ...(connection.method === 'openrouter_http' ? { api_key: input(form, 'api_key').value || undefined } : {}) }); await refresh(); }); };
+  if (connection.method !== 'openrouter_http') form.append(advanced);
+  let readModels: () => Model[] = (): Model[] => connection.models;
+  form.id = 'provider-configuration';
+  const footer: HTMLElement = text('div', '', 'provider-save-bar');
+  const feedback: HTMLElement = text('span', '', 'provider-save-status'); feedback.setAttribute('role', 'status');
+  const save: HTMLButtonElement = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save'; save.className = 'primary'; save.setAttribute('form', form.id); footer.append(feedback, save); editor.append(footer);
+  form.onsubmit = (event: SubmitEvent): void => { event.preventDefault(); void perform(async (): Promise<void> => { try { await invoke({ type: 'save_connection', connection: { ...connection, models: readModels(), name: name.value.trim(), ...(connection.method !== 'openrouter_http' ? { codex_home: input(form, 'codex_home').value.trim() || undefined } : {}) }, ...(connection.method === 'openrouter_http' ? { api_key: input(form, 'api_key').value || undefined } : {}) }); await refresh(); } catch (error: unknown) { feedback.textContent = error instanceof Error ? error.message : 'Could not save provider.'; } }); };
   configuration.append(form); detail.append(configuration);
-  const authentication: HTMLElement = text('div', '', 'detail-section'); authentication.append(text('h3', 'Authentication'), text('p', connection.method === 'openrouter_http' ? 'Uses the API key saved with this connection.' : 'Uses your existing Codex login.'));
+  const authentication: HTMLElement = text('div', '', 'provider-authentication'); authentication.append(text('p', connection.method === 'openrouter_http' ? 'Uses the API key saved with this connection.' : 'Uses your existing Codex login.'));
   if (connection.environment === 'wsl') authentication.append(text('p', `WSL · ${connection.wsl_distribution}`, 'muted'));
-  detail.append(authentication);
+  header.append(authentication);
   const models: HTMLElement = text('div', '', 'detail-section'); const modelHeading: HTMLElement = text('div', '', 'section-heading');
-  modelHeading.append(text('h3', 'Models'), button('Refresh models', async (): Promise<void> => { const available: Model[] = await invoke({ type: 'refresh_models', id: connection.id }) as Model[]; if (selectedId === connection.id) showModelSelection(models, connection, available); })); models.append(modelHeading);
-  if (!connection.models.length) models.append(text('p', 'No models selected. Refresh models to discover available models.'));
-  for (const model of connection.models) { const row: HTMLElement = text('div', '', 'model-row'); const description: HTMLElement = text('div', ''); description.append(text('strong', model.name), text('small', `${model.reasoning_efforts.join(' / ') || 'Default reasoning'} · ${model.context_window.toLocaleString()} context`)); row.append(description, text('span', 'Exposed', 'badge')); models.append(row); }
+  const updateSelection = (available: Model[]): void => { readModels = showModelSelection(models, { ...connection, models: readModels() }, available); };
+  const reload: HTMLButtonElement = button('Refresh', async (): Promise<void> => { await detectModels(models, connection, reload, updateSelection); });
+  modelHeading.append(text('h3', 'Models'), reload); models.append(modelHeading);
+  const progress: HTMLElement = text('p', 'Detecting models…', 'model-detection-status'); progress.setAttribute('role', 'status'); models.append(progress);
+  updateSelection(connection.models);
   detail.append(models);
-  const danger: HTMLElement = text('div', '', 'detail-section remove-section'); danger.append(text('p', 'Remove this connection from Provider Router.'), button('Remove provider', async (): Promise<void> => { if (await confirmRemoval(connection.name)) { await invoke({ type: 'remove_connection', id: connection.id }); await refresh(); } }, true)); detail.append(danger);
+  void detectModels(models, connection, reload, updateSelection);
+  const danger: HTMLElement = text('div', '', 'detail-section remove-section'); danger.append(text('p', 'Remove this provider'), button('Remove provider', async (): Promise<void> => { if (await confirmRemoval(connection.name)) { await invoke({ type: 'remove_connection', id: connection.id }); await refresh(); } }, true)); detail.append(danger);
 }  // RevExt: 15
 // RevExt: 6
 function openProviderDialog(): void {
   element('dialog-status').textContent = '';
+  const form: HTMLFormElement = element('add-connection') as HTMLFormElement;  // RevExt: 39
+  if (!input(form, 'name').value) input(form, 'name').value = input(form, 'method').value === 'openrouter_http' ? 'OpenRouter' : 'Codex';
+  setWizardStep(0);
   updateEnvironmentFields();  // RevExt: 22
   (element('provider-dialog') as HTMLDialogElement).showModal();
 }  // RevExt: 16
@@ -103,14 +129,15 @@ function confirmRemoval(name: string): Promise<boolean> {
 }  // RevExt: 17
 // RevExt: 8
 function navigate(): void {
-  const page: string = ['providers', 'applications', 'api-access', 'documentation'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'providers';
-  const names: Record<string, string> = { providers: 'Providers', applications: 'API keys', 'api-access': 'API access', documentation: 'Documentation' };
+  if (location.hash === '#applications') { location.replace('#api-access'); return; }
+  const page: string = ['providers', 'api-access', 'documentation'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'providers';
+  const names: Record<string, string> = { providers: 'Providers', 'api-access': 'API access', documentation: 'Documentation' };
   for (const id of Object.keys(names)) element(id).hidden = id !== page;
   for (const link of Array.from(document.querySelectorAll<HTMLAnchorElement>('.sidebar-nav a'))) { if (link.hash === `#${page}`) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); }
-  element('page-title').textContent = names[page]!; element('breadcrumb-page').textContent = names[page]!;
+  element('page-title').textContent = names[page]!;
 }  // RevExt: 18
 // RevExt: 9
-function showModelSelection(card: HTMLElement, connection: Connection, available: Model[]): void {
+function showModelSelection(card: HTMLElement, connection: Connection, available: Model[]): () => Model[] {
   card.querySelector('.model-selection')?.remove();
   const selection: HTMLElement = text('div', '', 'model-selection');
   const search: HTMLInputElement = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search models…'; search.setAttribute('aria-label', 'Search models');
@@ -132,11 +159,12 @@ function showModelSelection(card: HTMLElement, connection: Connection, available
   }  // RevExt: 27
   search.oninput = (): void => { for (const row of Array.from(list.querySelectorAll<HTMLElement>('[data-search]'))) { row.hidden = !row.dataset.search!.includes(search.value.toLowerCase()); const group: Element | null = row.nextElementSibling; if (group instanceof HTMLFieldSetElement) group.hidden = row.hidden || !(row.querySelector('input') as HTMLInputElement).checked || !group.querySelector('input'); } };
   if (!available.length) list.append(text('p', 'No models returned by this provider.'));
-  selection.append(search, list, button('Save selected models', async (): Promise<void> => { await invoke({ type: 'save_connection', connection: { ...connection, models: available.filter((model: Model): boolean => Boolean(selected.get(model.id)?.checked)).map((model: Model): Model => {
+  selection.append(search, list); card.append(selection);
+  return (): Model[] => available.filter((model: Model): boolean => Boolean(selected.get(model.id)?.checked)).map((model: Model): Model => {
     const permitted: string[] = model.reasoning_efforts.filter((effort: string): boolean => Boolean(efforts.get(model.id)?.get(effort)?.checked));
     if (model.reasoning_efforts.length && !permitted.length) throw new Error(`Choose at least one thinking effort for ${model.name}.`);
     return { ...model, reasoning_efforts: permitted, default_reasoning_effort: model.default_reasoning_effort && permitted.includes(model.default_reasoning_effort) ? model.default_reasoning_effort : permitted[0] ?? null };
-  }) } }); await refresh(); })); card.append(selection);
+  });  // RevExt: 44
 }  // RevExt: 19
 // RevExt: 10
 element('refresh').onclick = (): void => { void perform(refresh); };
@@ -144,32 +172,33 @@ element('updates').onclick = (): void => { void perform(async (): Promise<void> 
 element('dismiss-key').onclick = (): void => { (element('client-token') as HTMLInputElement).value = ''; element('new-key').hidden = true; };
 (element('add-connection') as HTMLFormElement).onsubmit = (event: SubmitEvent): void => {
   event.preventDefault(); const form: HTMLFormElement = event.currentTarget as HTMLFormElement;
+  if (wizardStep !== 2) { setWizardStep(wizardStep + 1); return; }
   void perform(async (): Promise<void> => {
-    const home: string = input(form, 'codex_home').value.trim(); const executable: string = input(form, 'executable').value.trim();
-    const connection: Connection = { id: uuidV7(), name: input(form, 'name').value.trim(), method: input(form, 'method').value as Method, ...(input(form, 'method').value === 'codex_cli' && input(form, 'environment').value === 'wsl' ? { environment: 'wsl' as const, wsl_distribution: input(form, 'wsl_distribution').value } : { environment: 'native' as const }), exposed: false, models: [], ...(home ? { codex_home: home } : {}), ...(executable ? { executable } : {}) };
+    const home: string = input(form, 'codex_home').value.trim();
+    const connection: Connection = { id: uuidV7(), name: input(form, 'name').value.trim(), method: input(form, 'method').value as Connection['method'], ...(input(form, 'method').value === 'codex_http' && input(form, 'environment').value === 'wsl' ? { environment: 'wsl' as const, wsl_distribution: input(form, 'wsl_distribution').value } : { environment: 'native' as const }), exposed: false, models: [], ...(home ? { codex_home: home } : {}) };
     await invoke({ type: 'save_connection', connection, api_key: input(form, 'api_key').value || undefined }); selectedId = connection.id; form.reset(); (element('provider-dialog') as HTMLDialogElement).close(); await refresh();
   });  // RevExt: 24
-};
+};  // RevExt: 32
 (element('add-client') as HTMLFormElement).onsubmit = (event: SubmitEvent): void => {
   event.preventDefault(); const form: HTMLFormElement = event.currentTarget as HTMLFormElement;
   void perform(async (): Promise<void> => { const client = await invoke({ type: 'create_client', name: input(form, 'name').value }) as { id: string; token: string }; (element('client-token') as HTMLInputElement).value = client.token; element('new-key').hidden = false; form.reset(); await refresh(); });
-};
+};  // RevExt: 33
 (element('network') as HTMLFormElement).onsubmit = (event: SubmitEvent): void => {
   event.preventDefault(); const form: HTMLFormElement = event.currentTarget as HTMLFormElement;
-  void perform(async (): Promise<void> => { await invoke({ type: 'save_network', network: { browser_origins: (form.elements.namedItem('browser_origins') as HTMLTextAreaElement).value.split(/\r?\n/).map((origin: string): string => origin.trim()).filter(Boolean), require_api_key: input(form, 'require_api_key').checked, port: Number(input(form, 'port').value), host: input(form, 'host').value.trim(), remote_enabled: input(form, 'remote_enabled').checked, trusted_proxy: input(form, 'trusted_proxy').checked, ...(input(form, 'public_endpoint').value ? { public_endpoint: input(form, 'public_endpoint').value.trim() } : {}), ...(input(form, 'tls_certificate').value ? { tls_certificate: input(form, 'tls_certificate').value.trim() } : {}), ...(input(form, 'tls_key').value ? { tls_key: input(form, 'tls_key').value.trim() } : {}) } }); await refresh(); });
-};
+  void perform(async (): Promise<void> => { await invoke({ type: 'save_network', network: { browser_origins: (form.elements.namedItem('browser_origins') as HTMLTextAreaElement).value.split(/\r?\n/).map((origin: string): string => origin.trim()).filter(Boolean), require_api_key: input(form, 'require_api_key').checked, port: Number(input(form, 'port').value), host: input(form, 'host').value.trim() } }); await refresh(); });
+};  // RevExt: 34
 // RevExt: 11
 /** Renderer identity generation uses only browser cryptography; it never receives Node. */
 function uuidV7(): string { const bytes: Uint8Array = crypto.getRandomValues(new Uint8Array(16)); let timestamp: number = Date.now(); for (let index: number = 5; index >= 0; index--) { bytes[index] = timestamp % 256; timestamp = Math.floor(timestamp / 256); } bytes[6] = bytes[6]! & 0x0f | 0x70; bytes[8] = bytes[8]! & 0x3f | 0x80; const value: string = [...bytes].map((byte: number): string => byte.toString(16).padStart(2, '0')).join(''); return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`; }
 window.addEventListener('hashchange', navigate);
 navigate();
-element('add-provider').onclick = openProviderDialog;
+// RevExt: 43
 element('close-provider').onclick = (): void => { (element('provider-dialog') as HTMLDialogElement).close(); };
 void perform(refresh);
 // RevExt: 12
 /** Keep environment choices local to Windows; each distribution retains its own Codex login. */
 function updateEnvironmentFields(): void {
-  const form: HTMLFormElement = element('add-connection') as HTMLFormElement;
+  const form: HTMLFormElement = element('add-connection') as HTMLFormElement;  // RevExt: 36
   const method: string = input(form, 'method').value;
   const environment: HTMLSelectElement = form.elements.namedItem('environment') as HTMLSelectElement;
   const distributions: HTMLSelectElement = form.elements.namedItem('wsl_distribution') as HTMLSelectElement;
@@ -177,13 +206,62 @@ function updateEnvironmentFields(): void {
   const available: readonly string[] = snapshot?.wsl_distributions ?? [];
   distributions.replaceChildren(...available.map((name: string): HTMLOptionElement => new Option(name, name)));
   if (available.includes(selected)) distributions.value = selected;
-  const windows: boolean = snapshot?.platform === 'win32' && method === 'codex_cli';
+  const windows: boolean = snapshot?.platform === 'win32' && method === 'codex_http';
   element('codex-environment-field').hidden = !windows;
   const wsl: boolean = windows && environment.value === 'wsl';
   element('wsl-distribution-field').hidden = !wsl;
   distributions.required = wsl;
+  element('connection-method-field').hidden = true;  // RevExt: 45
   element('api-key-field').hidden = method !== 'openrouter_http';
+  input(form, 'api_key').required = method === 'openrouter_http';
   element('codex-advanced-field').hidden = method === 'openrouter_http';
 }  // RevExt: 20
 (element('add-connection') as HTMLFormElement).querySelector('[name="method"]')?.addEventListener('change', updateEnvironmentFields);
 (element('add-connection') as HTMLFormElement).querySelector('[name="environment"]')?.addEventListener('change', updateEnvironmentFields);
+// RevExt: 29
+let wizardStep: number = 0;
+/** Keep the picker, identity and configuration panels aligned with the reference wizard. */
+function setWizardStep(step: number): void {
+  const form: HTMLFormElement = element('add-connection') as HTMLFormElement;  // RevExt: 37
+  if (step > 1 && !input(form, 'name').reportValidity()) return;
+  wizardStep = step;
+  for (const panel of Array.from(document.querySelectorAll<HTMLElement>('[data-panel]'))) panel.hidden = Number(panel.dataset.panel) !== step;
+  for (const control of Array.from(document.querySelectorAll<HTMLButtonElement>('[data-step]'))) {
+    const index: number = Number(control.dataset.step);
+    if (index === step) control.setAttribute('aria-current', 'step'); else control.removeAttribute('aria-current');
+    control.disabled = index > step;
+  }  // RevExt: 31
+  element('wizard-back').textContent = step === 0 ? 'Cancel' : 'Back';
+  element('wizard-next').hidden = step === 2;
+  element('wizard-submit').hidden = step !== 2;
+  element('wizard-next').textContent = step === 0 && input(form, 'method').value !== 'openrouter_http' ? 'Configure manually' : 'Next';
+}  // RevExt: 30
+element('wizard-back').onclick = (): void => { if (wizardStep === 0) (element('provider-dialog') as HTMLDialogElement).close(); else setWizardStep(wizardStep - 1); };
+element('wizard-next').onclick = (): void => { setWizardStep(wizardStep + 1); };
+for (const control of Array.from(document.querySelectorAll<HTMLButtonElement>('[data-step]'))) control.onclick = (): void => { setWizardStep(Number(control.dataset.step)); };
+for (const radio of Array.from(document.querySelectorAll<HTMLInputElement>('[name="provider"]'))) radio.onchange = (): void => {
+  const form: HTMLFormElement = element('add-connection') as HTMLFormElement;  // RevExt: 38
+  input(form, 'method').value = radio.value === 'openrouter' ? 'openrouter_http' : 'codex_http';
+  if (!input(form, 'name').value || ['Codex', 'OpenRouter'].includes(input(form, 'name').value)) input(form, 'name').value = radio.value === 'openrouter' ? 'OpenRouter' : 'Codex';
+  element('connection-method-field').hidden = true;  // RevExt: 46
+  updateEnvironmentFields(); setWizardStep(0);
+};  // RevExt: 35
+// RevExt: 40
+/** Refresh metadata on entry without changing the persisted model allow-list. Detached views ignore late results. */
+async function detectModels(section: HTMLElement, connection: Connection, reload: HTMLButtonElement, updateSelection: (available: Model[]) => void): Promise<void> {
+  if (section.getAttribute('aria-busy') === 'true') return;
+  section.setAttribute('aria-busy', 'true'); reload.disabled = true;
+  const progress: HTMLElement = section.querySelector<HTMLElement>('.model-detection-status')!;
+  progress.textContent = 'Detecting models…';
+  try {
+    const available: Model[] = await invoke({ type: 'refresh_models', id: connection.id }) as Model[];
+    if (!section.isConnected) return;
+    for (const row of Array.from(section.querySelectorAll(':scope > .model-row'))) row.remove();
+    progress.textContent = available.length ? 'Choose the models available to applications.' : 'No models returned by this provider.';
+    updateSelection(available);
+  } catch (error: unknown) {
+    if (section.isConnected) progress.textContent = error instanceof Error ? error.message : 'Could not detect models. Try Refresh.';
+  } finally {
+    section.removeAttribute('aria-busy'); reload.disabled = false;
+  }  // RevExt: 42
+}  // RevExt: 41

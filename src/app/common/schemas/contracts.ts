@@ -12,7 +12,7 @@ export const modelSchema = z.object({
   input_modalities: z.array(z.string()),
 }).superRefine((model, context): void => {
   if (model.default_reasoning_effort !== null && !model.reasoning_efforts.includes(model.default_reasoning_effort)) context.addIssue({ code: 'custom', message: 'The default thinking effort must be allowed.' });
-});
+});  // RevExt: 1
 export type Model = z.infer<typeof modelSchema>;
 export const methodSchema = z.enum(['codex_cli', 'codex_http', 'openrouter_http']);
 export type Method = z.infer<typeof methodSchema>;
@@ -22,11 +22,13 @@ export const connectionSchema = z.object({
   codex_home: z.string().optional(), executable: z.string().optional(),
   environment: z.enum(['native', 'wsl']).optional(), wsl_distribution: z.string().min(1).max(128).optional(),
 }).superRefine((connection, context): void => {
-  if (connection.environment === 'wsl' && (connection.method !== 'codex_cli' || !connection.wsl_distribution)) {
-    context.addIssue({ code: 'custom', message: 'A WSL connection requires Codex CLI and a selected distribution.' });
+  if (connection.environment === 'wsl' && (connection.method === 'openrouter_http' || !connection.wsl_distribution)) {
+    context.addIssue({ code: 'custom', message: 'A WSL connection requires Codex and a selected distribution.' });
   }
-});
+}).transform((connection) => ({ ...connection, method: connection.method === 'codex_cli' ? 'codex_http' as const : connection.method, models: connection.method === 'openrouter_http' ? connection.models : connection.models.filter((model): boolean => model.id !== 'gpt-reserve') }));
 export type Connection = z.infer<typeof connectionSchema>;
+/** Local provider availability contains no credential material or inferred model access. */
+export interface DetectedProvider { connection: Connection; status: 'ready' | 'login_required' | 'not_installed'; detail: string }
 export const toolCallSchema = z.object({ id: z.string().min(1), type: z.literal('function'), function: z.object({ name: z.string().min(1), arguments: z.string() }).strict() }).strict();
 export type ToolCall = z.infer<typeof toolCallSchema>;
 export const messageSchema = z.object({
@@ -50,7 +52,7 @@ export const resultSchema = z.object({
   request_id: uuidSchema, content: z.string(), tool_calls: z.array(toolCallSchema),
   usage: z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative() }),
   provider: z.enum(['codex', 'openrouter']), method: methodSchema, model: z.string(), reasoning_effort: z.string().optional(),
-});
+});  // RevExt: 2
 export type InferenceResult = z.infer<typeof resultSchema>;
 export interface ProviderDescriptor { id: string; name: string; provider: 'codex' | 'openrouter'; method: Method; models: Model[] }
 export interface ProviderAdapter {

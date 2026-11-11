@@ -131,7 +131,7 @@ export class ExistingCodexCredentials implements CredentialStore {
       return credentials;
     } catch (error: unknown) {
       if (error instanceof RouterError) throw error;
-      throw new RouterError('CODEX_LOGIN_UNAVAILABLE', 'No readable Codex subscription login was found. Use Codex CLI mode if your credentials use an unsupported encrypted backend.', 401);
+      throw new RouterError('CODEX_LOGIN_UNAVAILABLE', 'No readable Codex subscription login was found. Sign in with a supported file or native keyring credential store.', 401);
     }
   }
 
@@ -161,7 +161,7 @@ export class ExistingCodexCredentials implements CredentialStore {
 
   private async backend(): Promise<'file' | 'keyring' | 'auto'> {
     const settings: CodexAuthSettings = await codexAuthSettings(this.home);
-    if (settings.store !== 'file' && settings.secret_auth_storage) throw new RouterError('CODEX_STORAGE_UNSUPPORTED', 'Codex encrypted secrets storage requires Codex CLI mode.', 400);
+    if (settings.store !== 'file' && (settings.secret_auth_storage || this.home.startsWith('\\\\wsl.localhost\\'))) throw new RouterError('CODEX_STORAGE_UNSUPPORTED', 'Direct subscription access requires file or native keyring credentials; encrypted secrets and WSL keyrings are unsupported.', 400);
     return settings.store;
   }
 
@@ -178,8 +178,12 @@ async function credentialLock(home: string): Promise<() => Promise<void>> {
   // fs-native-extensions uses BSD flock on macOS and LockFileEx on Windows.
   // Its Linux OFD lock does not interoperate with Codex flock, so the development
   // adapter uses the OS flock utility on Linux instead. Linux installers are not shipped.
-  if (process.platform === 'linux') {
-    const child: ChildProcess = spawn('flock', ['-x', '-w', '10', file, 'sh', '-c', 'printf ready; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const wsl: RegExpExecArray | null = /^\\\\wsl\.localhost\\([^\\]+)(\\.*)$/.exec(home);
+  if (process.platform === 'linux' || wsl) {
+    // WSL credentials share Linux flock with the owning Codex installation.
+    const lockPath: string = wsl ? `${wsl[2]!.replaceAll('\\', '/')}/auth.json.lock` : file;
+    const args: string[] = ['-x', '-w', '10', lockPath, 'sh', '-c', 'printf ready; cat >/dev/null'];
+    const child: ChildProcess = spawn(wsl ? 'wsl.exe' : 'flock', wsl ? ['--distribution', wsl[1]!, '--exec', 'flock', ...args] : args, { stdio: ['pipe', 'pipe', 'ignore'] });
     await new Promise<void>((resolve, reject): void => {
       child.once('error', reject); child.once('exit', (code): void => { if (code) reject(new RouterError('CODEX_STORAGE_LOCKED', 'Codex credentials are busy.', 409)); });
       child.stdout?.once('data', (): void => resolve());

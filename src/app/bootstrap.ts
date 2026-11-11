@@ -6,14 +6,16 @@ import type { ManageUseCase } from './products/router/use-cases/manage/use-case.
 import { buildManageUseCase } from './products/router/dependencies.ts';
 import { createSettingsHandler } from './products/router/settings-router.ts';
 import { checkUpdates } from './services/update-service/service.ts';
-import { CodexCliAdapter } from './services/provider-service/providers/codex-cli.ts';
 import { CodexHttpAdapter, OpenRouterAdapter } from './services/provider-service/providers/http-providers.ts';
 import { RouterError, type Method, type ProviderAdapter } from './common/schemas/contracts.ts';
 import { uuid7 } from './common/identity/identity.ts';
 import { startRouter, type ListeningRouter } from './products/router/router.ts';
 import { RouterStore, type SecretCipher } from './products/router/repository/settings/file.ts';
 import { listWslDistributions } from './services/provider-service/providers/wsl-codex.ts';
-
+// RevExt: 4
+import { createLocalProviderDiscovery, type LocalProviderDiscovery } from './services/provider-service/providers/discovery.ts';
+// RevExt: 5
+const discovery: LocalProviderDiscovery = createLocalProviderDiscovery();
 app.setName('Provider Router');
 app.setAppUserModelId('org.providerrouter.desktop');
 const dataDirectory: string = !app.isPackaged && process.env.PROVIDER_ROUTER_DATA_DIR ? process.env.PROVIDER_ROUTER_DATA_DIR : path.join(app.getPath('appData'), 'provider-router');
@@ -38,7 +40,7 @@ async function showSettings(): Promise<void> {
   window.on('closed', (): void => { window = null; });
   await window.loadFile(renderer);
 }  // RevExt: 1
-
+// RevExt: 6
 async function restartListener(): Promise<void> {
   await listener?.close(); listener = null;
   await rm(path.join(dataDirectory, 'discovery.json'), { force: true });
@@ -48,10 +50,10 @@ async function restartListener(): Promise<void> {
     const temporary: string = path.join(dataDirectory, `discovery-${uuid7()}.tmp`);
     await writeFile(temporary, JSON.stringify(descriptor), { mode: 0o600 });
     await rename(temporary, path.join(dataDirectory, 'discovery.json'));
-  } catch { startupError = 'The API could not start. Check the listener port, remote access and certificate settings.'; }
+  } catch { startupError = 'The API could not start. Check the local listener host and port.'; }
 }  // RevExt: 2
-
-
+// RevExt: 7
+// RevExt: 8
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', (): void => { void showSettings(); });
@@ -70,16 +72,18 @@ else {
       decrypt: (value: Buffer): string => { if (!safeStorage.isEncryptionAvailable() || (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text')) throw new RouterError('VAULT_UNAVAILABLE', 'The operating system credential vault is unavailable.'); return safeStorage.decryptString(value); },
     };
     store = await RouterStore.open(dataDirectory, cipher);
-    adapters = { codex_cli: new CodexCliAdapter(), codex_http: new CodexHttpAdapter(), openrouter_http: new OpenRouterAdapter((id: string): string | undefined => store.secret(id)) };
+    const codex: CodexHttpAdapter = new CodexHttpAdapter();
+    adapters = { codex_cli: codex, codex_http: codex, openrouter_http: new OpenRouterAdapter((id: string): string | undefined => store.secret(id)) };
     const settingsUseCase: ManageUseCase = buildManageUseCase(store, adapters, {
       endpoint: (): string | null => listener?.endpoint || null, error: (): string | null => startupError,
-      distributions: listWslDistributions, platform: process.platform,
+      distributions: listWslDistributions, platform: process.platform, discover: (distributions: readonly string[]) => discovery.discover(distributions),
       revokeClient: async (id: string): Promise<void> => { if (listener) await listener.revokeClient(id); else await store.revokeClient(id); },
       restart: restartListener, checkUpdates,
     });
     ipcMain.handle('provider-router:settings', createSettingsHandler((): BrowserWindow | null => window, renderer, settingsUseCase));
     app.setAsDefaultProtocolClient('provider-router');
-    const menu: Electron.Menu = Menu.buildFromTemplate([{ label: 'Provider Router Settings', click: (): void => { void showSettings(); } }, { type: 'separator' }, { role: 'quit' }]);
+    // Tray menus have no GTK accelerator group; avoid the Quit role's implicit shortcut.
+    const menu: Electron.Menu = Menu.buildFromTemplate([{ label: 'Provider Router Settings', click: (): void => { void showSettings(); } }, { type: 'separator' }, { label: 'Quit', click: (): void => app.quit() }]);
     const applicationMenu: MenuItemConstructorOptions[] = [
       ...(process.platform === 'darwin' ? [{ role: 'appMenu' } as MenuItemConstructorOptions] : []),
       { label: 'File', submenu: [{ label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: (): void => { void showSettings(); } }, { type: 'separator' }, { role: process.platform === 'darwin' ? 'close' : 'quit' }] },

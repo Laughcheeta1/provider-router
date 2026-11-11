@@ -20,17 +20,25 @@ export class RouterStore implements RouterRepository {
   static async open(directory: string, cipher: SecretCipher): Promise<RouterStore> {
     const file: string = path.join(directory, 'settings.json');
     let state: State;
+    let migrated: boolean = false;
     try {
       const stored: unknown = JSON.parse(await readFile(file, 'utf8'));
       // Existing installations retain their grants instead of becoming unauthenticated on upgrade.
       if (stored && typeof stored === 'object' && 'network' in stored && stored.network && typeof stored.network === 'object' && !('require_api_key' in stored.network)) Object.assign(stored.network, { require_api_key: true });
+      // Retired remote listeners return to loopback while preserving keys, origins and port.
+      if (stored && typeof stored === 'object' && 'network' in stored && stored.network && typeof stored.network === 'object' && 'remote_enabled' in stored.network && stored.network.remote_enabled === true) Object.assign(stored.network, { host: '127.0.0.1' });
       state = stateSchema.parse(stored);
+      // Retain connection identities and grants while retiring CLI inference.
+      migrated = state.connections.some((_connection: Connection, index: number): boolean =>
+        (stored as { connections: { method: string }[] }).connections[index]?.method === 'codex_cli');
     }  // RevExt: 1
     catch (error: unknown) {
       if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw new RouterError('SETTINGS_INVALID', 'The local configuration could not be read. Restore or repair it before starting.', 500);
       state = { version: 1, instance_id: uuid7(), connections: [], clients: [], secrets: {}, network: networkSchema.parse({}) };
     }  // RevExt: 2
-    return new RouterStore(file, cipher, state);
+    const store: RouterStore = new RouterStore(file, cipher, state);
+    if (migrated) await store.update((): void => {});
+    return store;
   }
 
   authenticate(token: string): Client | undefined {

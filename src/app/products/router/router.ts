@@ -1,7 +1,5 @@
-/** Authenticated, bounded local or explicitly enabled remote inference API. */
+/** Authenticated, bounded local inference API. */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { createServer as createTlsServer } from 'node:https';
-import { readFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { ZodError } from 'zod';
 import { inferenceSchema, PROTOCOL_VERSION, RouterError, type Connection, type InferenceRequest, type InferenceResult, type Method, type ProviderAdapter, type ProviderDescriptor } from '../../common/schemas/contracts.ts';
@@ -27,12 +25,12 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
       json(response, failure.status, { error: { code: failure.code, message: failure.message, type: failure.status === 401 ? 'authentication_error' : failure.status === 429 ? 'rate_limit_error' : failure.status >= 500 ? 'api_error' : 'invalid_request_error', param: null } });
     });
   };
-  const server: Server = network.tls_certificate && network.tls_key ? createTlsServer({ cert: await readFile(network.tls_certificate), key: await readFile(network.tls_key), minVersion: 'TLSv1.2' }, handle) : createServer(handle);
+  const server: Server = createServer(handle);
   server.headersTimeout = 10_000; server.requestTimeout = 30_000;
   await new Promise<void>((resolve, reject): void => { server.once('error', reject); server.listen(network.port, network.host, (): void => { server.removeListener('error', reject); resolve(); }); });
   const address: AddressInfo = server.address() as AddressInfo;
   const host: string = address.family === 'IPv6' ? `[${address.address}]` : address.address;
-  const endpoint: string = `${network.tls_certificate ? 'https' : 'http'}://${host}:${address.port}`;
+  const endpoint: string = `http://${host}:${address.port}`;
   return {
     endpoint,
     close: async (): Promise<void> => { inference.dispose(); await new Promise<void>((resolve, reject): void => { server.close((error?: Error): void => error ? reject(error) : resolve()); server.closeAllConnections(); }); },
@@ -40,7 +38,7 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
   };
 // RevExt: 3
   async function dispatch(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (!network.remote_enabled && request.headers.host && ![new URL(endpoint).host, `localhost:${new URL(endpoint).port}`].includes(request.headers.host)) throw new RouterError('HOST_REJECTED', 'Use the configured local Router endpoint.', 403);
+    if (request.headers.host && ![new URL(endpoint).host, `localhost:${new URL(endpoint).port}`].includes(request.headers.host)) throw new RouterError('HOST_REJECTED', 'Use the configured local Router endpoint.', 403);
     const origin: string | undefined = request.headers.origin;
     if (origin) {
       if (!network.browser_origins?.includes(origin)) throw new RouterError('BROWSER_ORIGIN_REJECTED', 'Approve this website origin in Provider Router API access settings.', 403);
