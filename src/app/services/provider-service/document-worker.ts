@@ -1,6 +1,6 @@
 /** Parse untrusted documents in a cancellable worker without fetching external resources. */
 import { createRequire } from 'node:module';
-import { dirname, join, sep } from 'node:path';
+import { dirname, join } from 'node:path';
 import { parentPort, workerData } from 'node:worker_threads';
 import { parse as parseCsv } from 'csv-parse/sync';
 import { createCanvas } from '@napi-rs/canvas';
@@ -30,9 +30,10 @@ async function pdf({ bytes }: Job): Promise<Part[]> {
   const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const requireDependency: NodeRequire = createRequire(import.meta.url);
   const root: string = dirname(requireDependency.resolve('pdfjs-dist/package.json'));
+  // PDF.js requires directory paths to end in a forward slash on every platform.
   const task = getDocument({ data: bytes, stopAtErrors: true, enableXfa: false, useWorkerFetch: false,
-    cMapUrl: join(root, 'cmaps') + sep, standardFontDataUrl: join(root, 'standard_fonts') + sep,
-    wasmUrl: join(root, 'wasm') + sep, iccUrl: join(root, 'iccs') + sep, maxImageSize: 16_000_000 });
+    cMapUrl: join(root, 'cmaps') + '/', standardFontDataUrl: join(root, 'standard_fonts') + '/',
+    wasmUrl: join(root, 'wasm') + '/', iccUrl: join(root, 'iccs') + '/', maxImageSize: 16_000_000 });
   try {
     const document = await task.promise;
     if (document.numPages > 20) throw new ExtractionLimit();
