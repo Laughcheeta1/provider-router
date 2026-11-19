@@ -1,6 +1,6 @@
 /** Validate provider answers and tools at the boundary, before returning them to any client. */
 import { Ajv } from 'ajv';
-import { RouterError, type InferenceRequest, type InferenceResult, type Model, type Tool, type ToolCall } from '../../../../common/schemas/contracts.ts';
+import { filePartSchema, RouterError, type InferenceRequest, type InferenceResult, type Model, type Tool, type ToolCall } from '../../../../common/schemas/contracts.ts';
 
 const ajv: Ajv = new Ajv({ strict: false, allErrors: false, validateFormats: false });
 /** Enforce advertised model choices, output limits and represented input modalities. */
@@ -11,18 +11,27 @@ export function validateRequest(request: InferenceRequest, models: Model[]): voi
   if (request.tools.length && !model.tools) throw new RouterError('TOOLS_UNSUPPORTED', 'The selected model does not support tools.');
   if (request.response_format && !model.structured_output) throw new RouterError('SCHEMA_UNSUPPORTED', 'The selected model does not support structured output.');
   if (request.max_output_tokens && request.max_output_tokens > model.max_output_tokens) throw new RouterError('OUTPUT_LIMIT', 'The output token limit exceeds this model’s capability.');
-  // Version 1 rejects media rather than flattening or silently dropping content blocks.
-  if (request.messages.some((message): boolean => Array.isArray(message.content) && message.content.some((part): boolean => part.type !== 'text' || typeof part.text !== 'string'))) throw new RouterError('MEDIA_UNSUPPORTED', 'This adapter currently accepts text messages only.');
+  for (const message of request.messages) {  // RevExt: 1
+    if (!Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part.type === 'text' && typeof part.text === 'string') continue;
+      if (message.role === 'user' && part.type === 'file') {
+        filePartSchema.parse(part);
+        continue;
+      }
+      throw new RouterError('MEDIA_UNSUPPORTED', 'Only text and user document attachments are supported.');
+    }  // RevExt: 3
+  }  // RevExt: 5
   const calls: Set<string> = new Set();
   const answered: Set<string> = new Set();
-  for (const message of request.messages) {
+  for (const message of request.messages) {  // RevExt: 2
     if (message.role === 'tool') {
       if (!message.tool_call_id || !calls.has(message.tool_call_id) || answered.has(message.tool_call_id)) throw new RouterError('INVALID_HISTORY', 'Tool results must match one preceding assistant function call.');
       answered.add(message.tool_call_id);
-    }
+    }  // RevExt: 4
     if (message.tool_calls?.length && message.role !== 'assistant') throw new RouterError('INVALID_HISTORY', 'Only assistant messages may contain function calls.');
     for (const call of message.tool_calls || []) { if (calls.has(call.id)) throw new RouterError('INVALID_HISTORY', 'Function call identifiers must be distinct.'); calls.add(call.id); }
-  }
+  }  // RevExt: 6
   if (answered.size !== calls.size) throw new RouterError('INVALID_HISTORY', 'Supply each preceding function result before requesting another inference.');
   const toolNames: string[] = request.tools.map((tool: Tool): string => tool.function.name);
   if (new Set(toolNames).size !== toolNames.length) throw new RouterError('INVALID_TOOLS', 'Tool names must be unique.');
@@ -41,12 +50,12 @@ export function validateResult(request: InferenceRequest, result: InferenceResul
     try { args = JSON.parse(call.function.arguments) as unknown; }
     catch { throw new RouterError('INVALID_TOOL_CALLS', 'The provider returned invalid tool arguments.', 502); }
     if (!ajv.validate(tool.function.parameters, args)) throw new RouterError('INVALID_TOOL_ARGUMENTS', 'The provider returned arguments outside the tool contract.', 502);
-  }
+  }  // RevExt: 7
   if (!result.tool_calls.length && request.response_format) {
     let answer: unknown;
     try { answer = JSON.parse(result.content) as unknown; }
     catch { throw new RouterError('INVALID_COMPLETION', 'The provider returned invalid structured output.', 502); }
     if (!ajv.validate(request.response_format.json_schema.schema, answer)) throw new RouterError('INVALID_COMPLETION', 'The provider answer does not match the requested schema.', 502);
-  }
+  }  // RevExt: 8
   return result;
 }

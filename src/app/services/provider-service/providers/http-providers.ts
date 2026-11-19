@@ -36,10 +36,10 @@ export class OpenRouterAdapter implements ProviderAdapter {
   async models(connection: Connection, signal: AbortSignal): Promise<Model[]> {
     const response: Response = await this.fetcher(`${this.base}/models`, { headers: this.headers(connection), redirect: 'error', signal });
     requireSuccess(response);
-    const catalog = z.object({ data: z.array(z.object({ id: z.string(), name: z.string(), context_length: z.number().int().positive(), top_provider: z.object({ max_completion_tokens: z.number().int().positive().nullable() }), supported_parameters: z.array(z.string()).default([]), reasoning: z.object({ supported_efforts: z.array(z.string()).nullable().optional(), default_effort: z.string().nullable().optional(), mandatory: z.boolean().optional() }).optional() })) }).parse(await response.json());
+    const catalog = z.object({ data: z.array(z.object({ architecture: z.object({ input_modalities: z.array(z.string()) }).optional(), id: z.string(), name: z.string(), context_length: z.number().int().positive(), top_provider: z.object({ max_completion_tokens: z.number().int().positive().nullable() }), supported_parameters: z.array(z.string()).default([]), reasoning: z.object({ supported_efforts: z.array(z.string()).nullable().optional(), default_effort: z.string().nullable().optional(), mandatory: z.boolean().optional() }).optional() })) }).parse(await response.json());
     return catalog.data.map((entry): Model => ({
       id: entry.id, name: entry.name, reasoning_efforts: (entry.reasoning?.supported_efforts === null ? ['max', 'xhigh', 'high', 'medium', 'low', 'minimal', 'none'] : entry.reasoning?.supported_efforts || []).filter((effort: string): boolean => !entry.reasoning?.mandatory || effort !== 'none'), default_reasoning_effort: entry.reasoning?.default_effort || null,
-      context_window: entry.context_length, max_output_tokens: entry.top_provider.max_completion_tokens || Math.floor(entry.context_length / 5), tools: entry.supported_parameters.includes('tools'), structured_output: entry.supported_parameters.includes('structured_outputs'), input_modalities: ['text'],
+      context_window: entry.context_length, max_output_tokens: entry.top_provider.max_completion_tokens || Math.floor(entry.context_length / 5), tools: entry.supported_parameters.includes('tools'), structured_output: entry.supported_parameters.includes('structured_outputs'), input_modalities: entry.architecture?.input_modalities.includes('image') ? ['text', 'image'] : ['text'],
     }));
   }
 
@@ -63,8 +63,14 @@ export class CodexHttpAdapter implements ProviderAdapter {
         input.push({ type: 'function_call_output', call_id: message.tool_call_id, output: textContent(message) });
         continue;
       }
+      const type: string = message.role === 'assistant' ? 'output_text' : 'input_text';
       const text: string = textContent(message);
-      if (text) input.push({ role: message.role === 'system' ? 'developer' : message.role, content: [{ type: message.role === 'assistant' ? 'output_text' : 'input_text', text }] });
+      const content: Record<string, unknown>[] = Array.isArray(message.content) && message.content.some((part): boolean => part.type === 'image_url')
+        ? message.content.map((part): Record<string, unknown> => part.type === 'image_url'
+          ? { type: 'input_image', image_url: (part.image_url as { url: string }).url }
+          : { type, text: part.text })
+        : text ? [{ type, text }] : [];
+      if (content.length) input.push({ role: message.role === 'system' ? 'developer' : message.role, content });
       for (const call of message.tool_calls || []) input.push({ type: 'function_call', call_id: call.id, name: call.function.name, arguments: call.function.arguments });
     }
     const payload: Record<string, unknown> = { model: request.model, instructions: '', input, store: false, stream: true, tools: request.tools.map((tool) => ({ type: 'function', ...tool.function })), ...(request.reasoning_effort ? { reasoning: { effort: request.reasoning_effort } } : {}) };

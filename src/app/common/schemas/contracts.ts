@@ -31,11 +31,15 @@ export type Connection = z.infer<typeof connectionSchema>;
 export interface DetectedProvider { connection: Connection; status: 'ready' | 'login_required' | 'not_installed'; detail: string }
 export const toolCallSchema = z.object({ id: z.string().min(1), type: z.literal('function'), function: z.object({ name: z.string().min(1), arguments: z.string() }).strict() }).strict();
 export type ToolCall = z.infer<typeof toolCallSchema>;
+export const filePartSchema = z.object({
+  type: z.literal('file'),
+  file: z.object({ filename: z.string().min(1).max(255), file_data: z.string().min(1) }).strict(),
+}).strict();  // RevExt: 3
 export const messageSchema = z.object({
   role: z.enum(['system', 'developer', 'user', 'assistant', 'tool']),
   content: z.union([z.string(), z.array(jsonObjectSchema), z.null()]),
   tool_calls: z.array(toolCallSchema).optional(), tool_call_id: z.string().optional(), name: z.string().optional(),
-}).strict();
+}).strict();  // RevExt: 4
 export type Message = z.infer<typeof messageSchema>;
 export const toolSchema = z.object({ type: z.literal('function'), function: z.object({ name: z.string().min(1), description: z.string().optional(), parameters: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).strict();
 export type Tool = z.infer<typeof toolSchema>;
@@ -46,7 +50,7 @@ export const inferenceSchema = z.object({
   max_output_tokens: z.number().int().positive().optional(),
   tool_choice: z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), function: z.object({ name: z.string().min(1) }) })]).optional(),
   parallel_tool_calls: z.boolean().optional(),
-}).strict();
+}).strict();  // RevExt: 5
 export type InferenceRequest = z.infer<typeof inferenceSchema>;
 export const resultSchema = z.object({
   request_id: uuidSchema, content: z.string(), tool_calls: z.array(toolCallSchema),

@@ -3,12 +3,12 @@ import type { ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { inferenceSchema, jsonObjectSchema, messageSchema, RouterError, toolSchema, uuidSchema, type Connection, type InferenceRequest, type InferenceResult, type Message, type Tool } from '../../../common/schemas/contracts.ts';
 import { uuid7 } from '../../../common/identity/identity.ts';
-
+// RevExt: 1
 const formatSchema = z.object({ type: z.literal('json_schema'), json_schema: z.object({ name: z.string(), schema: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).strict();
 const toolChoiceSchema = z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), function: z.object({ name: z.string() }) })]);
 const chatSchema = z.object({ model: z.string().min(1), messages: z.array(messageSchema).min(1), tools: z.array(toolSchema).optional(), response_format: formatSchema.optional(), reasoning_effort: z.string().optional(), max_tokens: z.number().int().positive().optional(), max_completion_tokens: z.number().int().positive().optional(), stream: z.boolean().default(false), stream_options: z.object({ include_usage: z.boolean().optional() }).optional(), tool_choice: toolChoiceSchema.optional(), parallel_tool_calls: z.boolean().optional() }).strict();
 const responsesSchema = z.object({ model: z.string().min(1), input: z.union([z.string(), z.array(jsonObjectSchema)]), instructions: z.string().nullable().optional(), tools: z.array(z.object({ type: z.literal('function'), name: z.string(), description: z.string().optional(), parameters: jsonObjectSchema, strict: z.boolean().optional() }).strict()).optional(), text: z.object({ format: z.object({ type: z.literal('json_schema'), name: z.string(), schema: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).optional(), reasoning: z.object({ effort: z.string().nullable().optional() }).optional(), max_output_tokens: z.number().int().positive().optional(), stream: z.boolean().default(false), store: z.literal(false).optional(), tool_choice: z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), name: z.string() })]).optional(), parallel_tool_calls: z.boolean().optional() }).strict();
-
+// RevExt: 2
 export interface OpenAIRequest {
   inference: InferenceRequest;
   tools: Tool[];
@@ -19,12 +19,12 @@ export interface OpenAIRequest {
   tool_choice: 'auto' | 'none' | 'required' | { name: string };
   parallel_tool_calls: boolean;
 }
-
+// RevExt: 3
 /** Qualifying models disambiguates independently exposed connections without custom SDK options. */
 export function modelList(connections: Connection[]): Record<string, unknown> {
   return { object: 'list', data: connections.filter((connection: Connection): boolean => connection.exposed).flatMap((connection: Connection): Record<string, unknown>[] => connection.models.map((model): Record<string, unknown> => ({ id: `${connection.id}/${model.id}`, object: 'model', created: 0, owned_by: connection.method === 'openrouter_http' ? 'openrouter' : 'openai', provider_router: { connection_id: connection.id, connection_name: connection.name, provider: connection.method === 'openrouter_http' ? 'openrouter' : 'codex', model: model.id, method: connection.method, name: model.name, reasoning_efforts: model.reasoning_efforts, default_reasoning_effort: model.default_reasoning_effort, context_window: model.context_window, max_output_tokens: model.max_output_tokens, tools: model.tools, structured_output: model.structured_output, input_modalities: model.input_modalities } }))) };
 }
-
+// RevExt: 4
 /** Decode supported SDK inputs explicitly; unsupported options fail before spending provider tokens. */
 export function decodeOpenAI(surface: 'chat' | 'responses', value: unknown, connections: Connection[], requestId?: string): OpenAIRequest {
   const correlation = uuidSchema.safeParse(requestId);
@@ -48,7 +48,7 @@ export function decodeOpenAI(surface: 'chat' | 'responses', value: unknown, conn
   validateChoice(choice, inference.tools);
   return { inference, tools, model: selected.qualified, stream: input.stream, stream_usage: true, surface, tool_choice: choice, parallel_tool_calls: input.parallel_tool_calls ?? true };
 }
-
+// RevExt: 5
 /** Validate the caller's requested decision shape even for adapters without native choice support. */
 export function validateOpenAIResult(request: OpenAIRequest, result: InferenceResult): void {
   if (request.tool_choice === 'required' && !result.tool_calls.length) throw new RouterError('TOOL_CHOICE_UNFULFILLED', 'The provider did not return a required tool call.', 502);
@@ -56,7 +56,7 @@ export function validateOpenAIResult(request: OpenAIRequest, result: InferenceRe
   if (typeof choice === 'object' && (!result.tool_calls.length || result.tool_calls.some((call): boolean => call.function.name !== choice.name))) throw new RouterError('TOOL_CHOICE_UNFULFILLED', 'The provider did not return the selected tool call.', 502);
   if (!request.parallel_tool_calls && result.tool_calls.length > 1) throw new RouterError('PARALLEL_TOOLS_UNSUPPORTED', 'The provider returned more than one tool call.', 502);
 }
-
+// RevExt: 6
 /** Emit normal SDK objects or finite SSE streams; version 1 buffers inference until completion. */
 export function writeOpenAI(response: ServerResponse, request: OpenAIRequest, result: InferenceResult): void {
   const created: number = Math.floor(Date.now() / 1000);
@@ -97,12 +97,12 @@ export function writeOpenAI(response: ServerResponse, request: OpenAIRequest, re
     } else {
       emit('response.function_call_arguments.delta', { item_id: item.id, output_index: index, delta: item.arguments });
       emit('response.function_call_arguments.done', { item_id: item.id, output_index: index, arguments: item.arguments, name: item.name });
-    }
+    }  // RevExt: 11
     emit('response.output_item.done', { output_index: index, item });
   });
   emit('response.completed', { response: object }); response.end();
 }
-
+// RevExt: 7
 function selectModel(name: string, connections: Connection[]): { connection: Connection; model: string; qualified: string } {
   const choices: { connection: Connection; model: string; qualified: string }[] = [];
   for (const connection of connections) { if (!connection.exposed) continue; for (const model of connection.models) { const qualified: string = `${connection.id}/${model.id}`; if (name === qualified || name === model.id) choices.push({ connection, model: model.id, qualified }); } }
@@ -110,23 +110,32 @@ function selectModel(name: string, connections: Connection[]): { connection: Con
   if (choices.length !== 1) throw new RouterError('MODEL_AMBIGUOUS', 'Multiple connections expose this model. Use the qualified model identifier from /v1/models.');
   return choices[0]!;
 }
-
+// RevExt: 8
 function responseMessages(input: string | Record<string, unknown>[]): Message[] {
   if (typeof input === 'string') return [{ role: 'user', content: input }];
   return input.map((item: Record<string, unknown>): Message => {
     if (item.type === 'function_call') {
       const call = z.object({ type: z.literal('function_call'), call_id: z.string(), name: z.string(), arguments: z.string(), id: z.string().optional(), status: z.string().optional() }).parse(item);
       return { role: 'assistant', content: '', tool_calls: [{ id: call.call_id, type: 'function', function: { name: call.name, arguments: call.arguments } }] };
-    }
+    }  // RevExt: 12
     if (item.type === 'function_call_output') {
       const output = z.object({ type: z.literal('function_call_output'), call_id: z.string(), output: z.string(), id: z.string().optional() }).parse(item);
       return { role: 'tool', tool_call_id: output.call_id, content: output.output };
-    }
-    const message = z.object({ role: z.enum(['system', 'developer', 'user', 'assistant']), type: z.literal('message').optional(), content: z.union([z.string(), z.array(z.object({ type: z.enum(['input_text', 'output_text']), text: z.string(), annotations: z.array(z.unknown()).optional(), logprobs: z.array(z.unknown()).optional() }))]), id: z.string().optional(), status: z.string().optional() }).strict().parse(item);
-    return { role: message.role, content: typeof message.content === 'string' ? message.content : message.content.map((part): string => part.text).join('\n') };
+    }  // RevExt: 13
+    const textPart = z.object({ type: z.enum(['input_text', 'output_text']), text: z.string(), annotations: z.array(z.unknown()).optional(), logprobs: z.array(z.unknown()).optional() });
+    const filePart = z.object({ type: z.literal('input_file'), filename: z.string(), file_data: z.string() }).strict();
+    const message = z.object({ role: z.enum(['system', 'developer', 'user', 'assistant']), type: z.literal('message').optional(), content: z.union([z.string(), z.array(z.union([textPart, filePart]))]), id: z.string().optional(), status: z.string().optional() }).strict().parse(item);
+    if (typeof message.content === 'string') return { role: message.role, content: message.content };
+    if (!message.content.some((part): boolean => part.type === 'input_file')) {
+      return { role: message.role, content: message.content.map((part): string => 'text' in part ? part.text : '').join('\n') };
+    }  // RevExt: 14
+// RevExt: 9
+    return { role: message.role, content: message.content.map((part): Record<string, unknown> => part.type === 'input_file'
+      ? { type: 'file', file: { filename: part.filename, file_data: part.file_data } }
+      : { type: 'text', text: part.text }) };
   });
 }
-
+// RevExt: 10
 function validateChoice(choice: OpenAIRequest['tool_choice'], tools: Tool[]): void {
   if (choice === 'required' && !tools.length) throw new RouterError('INVALID_TOOL_CHOICE', 'Required tool choice needs at least one function.');
   if (typeof choice === 'object' && !tools.some((tool: Tool): boolean => tool.function.name === choice.name)) throw new RouterError('INVALID_TOOL_CHOICE', 'The selected function is not present in tools.');

@@ -14,7 +14,7 @@ export class InferenceUseCase {
     pending.abort.abort();
   }
   dispose(): void { for (const item of this.active.values()) item.abort.abort(); }
-  async execute(clientId: string, token: string | null, input: InferenceRequest, abort: AbortController): Promise<InferenceResult> {
+  async execute(clientId: string, token: string | null, input: InferenceRequest, abort: AbortController, checkAttachments: boolean = false): Promise<InferenceResult> {
     const connection: Connection | undefined = this.repository.connection(input.connection_id);
     if (!connection?.exposed) throw new RouterError('CONNECTION_UNAVAILABLE', 'The requested connection is not exposed.', 404);
     validateRequest(input, connection.models);
@@ -27,7 +27,9 @@ export class InferenceUseCase {
     const deadline: ReturnType<typeof setTimeout> = setTimeout((): void => abort.abort(), 600_000);
     this.active.set(input.request_id, { client_id: clientId, abort });
     try {
-      const result: InferenceResult = resultSchema.parse(await this.providers.infer(effectiveInput, connection, abort.signal));
+      const result: InferenceResult = resultSchema.parse(checkAttachments
+        ? await this.providers.checkAttachments(effectiveInput, connection, abort.signal)
+        : await this.providers.infer(effectiveInput, connection, abort.signal));
       abort.signal.throwIfAborted();
       if (token !== null ? !this.repository.authenticate(token) : this.repository.publicState().network.require_api_key) throw new RouterError('CLIENT_UNAUTHORIZED', 'The client key was revoked.', 401);
       if (result.request_id !== input.request_id || result.model !== input.model || result.method !== connection.method) throw new RouterError('INVALID_COMPLETION', 'The provider returned a mismatched inference response.', 502);

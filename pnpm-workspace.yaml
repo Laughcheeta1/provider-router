@@ -6,6 +6,8 @@ supportedArchitectures:
   libc: [current]
 allowBuilds:
   electron: false
+  electron-winstaller: false
   esbuild: false
   fs-native-extensions: false
   node-gyp-build: false
+  tesseract.js: false

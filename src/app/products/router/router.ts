@@ -72,7 +72,8 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
     if (cancel && request.method === 'POST') {
       inference.cancel(client?.id ?? store.publicState().instance_id, cancel[1]!); json(response, 200, { cancelled: true }); return;
     }  // RevExt: 13
-    if (!['/v1/inference', '/v1/chat/completions', '/v1/responses'].includes(target.pathname) || request.method !== 'POST') throw new RouterError('NOT_FOUND', 'This endpoint is unavailable.', 404);
+    const checkAttachments: boolean = target.pathname === '/v1/attachment-checks';
+    if (!['/v1/inference', '/v1/chat/completions', '/v1/responses', '/v1/attachment-checks'].includes(target.pathname) || request.method !== 'POST') throw new RouterError('NOT_FOUND', 'This endpoint is unavailable.', 404);
     if (!request.headers['content-type']?.startsWith('application/json')) throw new RouterError('CONTENT_TYPE_REQUIRED', 'Use application/json for inference requests.', 415);
     const value: unknown = await readJson(request);
     const correlation: string | string[] | undefined = request.headers['x-request-id'];
@@ -84,7 +85,7 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
     response.once('close', disconnect);
     request.once('aborted', disconnect);
     try {
-      const result: InferenceResult = await inference.execute(client?.id ?? store.publicState().instance_id, client ? token! : null, input, abort);
+      const result: InferenceResult = await inference.execute(client?.id ?? store.publicState().instance_id, client ? token! : null, input, abort, checkAttachments);
       if (canonical) { validateOpenAIResult(canonical, result); writeOpenAI(response, canonical, result); }
       else json(response, 200, result);
     } catch (error: unknown) {
@@ -102,7 +103,7 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   for await (const chunk of request) {
     const buffer: Buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
     bytes += buffer.length;
-    if (bytes > 16_777_216) throw new RouterError('REQUEST_TOO_LARGE', 'The request exceeds the supported size.', 413);
+    if (bytes > 36 * 1024 * 1024) throw new RouterError('REQUEST_TOO_LARGE', 'The request exceeds the supported size.', 413);
     chunks.push(buffer);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString()) as unknown; }

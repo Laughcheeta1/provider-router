@@ -16,13 +16,13 @@ const disabledFeatures: string[] = ['shell_tool', 'unified_exec', 'multi_agent',
 
 /** Read catalog metadata only, excluding model instructions, credentials and local tools. */
 export function codexCatalog(value: unknown): Model[] {
-  const entries = z.object({ models: z.array(z.object({ slug: z.string(), display_name: z.string().optional(), context_window: z.number().optional(), max_output_tokens: z.number().optional(), supported_reasoning_levels: z.array(z.union([z.string(), z.object({ effort: z.string() })])).optional(), default_reasoning_level: z.string().optional() }).passthrough()) }).parse(value).models;
+  const entries = z.object({ models: z.array(z.object({ slug: z.string(), input_modalities: z.array(z.string()).optional(), display_name: z.string().optional(), context_window: z.number().optional(), max_output_tokens: z.number().optional(), supported_reasoning_levels: z.array(z.union([z.string(), z.object({ effort: z.string() })])).optional(), default_reasoning_level: z.string().optional() }).passthrough()) }).parse(value).models;
   return entries.filter((entry): boolean => entry.slug !== 'gpt-reserve' && typeof entry.context_window === 'number' && entry.context_window > 0).map((entry): Model => ({
     id: entry.slug, name: entry.display_name || entry.slug,
     reasoning_efforts: (entry.supported_reasoning_levels || []).map((effort): string => typeof effort === 'string' ? effort : effort.effort),
     default_reasoning_effort: entry.default_reasoning_level || null,
     context_window: entry.context_window!, max_output_tokens: entry.max_output_tokens || Math.floor(entry.context_window! / 5),
-    tools: true, structured_output: true, input_modalities: ['text'],
+    tools: true, structured_output: true, input_modalities: entry.input_modalities?.includes('image') ? ['text', 'image'] : ['text'],
   }));
 }
 

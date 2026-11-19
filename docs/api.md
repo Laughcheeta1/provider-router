@@ -36,18 +36,19 @@ An unqualified upstream model ID is accepted only when exactly one exposed conne
 
 ## POST /v1/chat/completions
 
-Supported request fields are `model`, `messages`, `tools`, `tool_choice`, `parallel_tool_calls`, `response_format`, `reasoning_effort`, `max_tokens` or `max_completion_tokens`, `stream`, and `stream_options.include_usage`. Messages retain system/developer/user/assistant/tool roles, assistant `tool_calls`, and `tool_call_id` associations. Text content strings and text content blocks are supported. Function tools use normal OpenAI JSON schemas. Structured output uses `response_format.type = "json_schema"`.
+Supported request fields are `model`, `messages`, `tools`, `tool_choice`, `parallel_tool_calls`, `response_format`, `reasoning_effort`, `max_tokens` or `max_completion_tokens`, `stream`, and `stream_options.include_usage`. Messages retain system/developer/user/assistant/tool roles, assistant `tool_calls`, and `tool_call_id` associations. Content accepts text strings and text blocks. User messages also accept inline `file` blocks. Function tools use normal OpenAI JSON schemas. Structured output uses `response_format.type = "json_schema"`.
 
-```javascript
-import OpenAI from 'openai';
-const client = new OpenAI({ baseURL: 'http://127.0.0.1:47831/v1', apiKey: process.env.PROVIDER_ROUTER_KEY || 'local' });
-const models = await client.models.list();
-const answer = await client.chat.completions.create({
-  model: models.data[0].id,
-  messages: [{ role: 'user', content: 'What is seven plus seven?' }],
-  reasoning_effort: 'low',
-});
-console.log(answer.choices[0].message.content);
+```json
+{
+  "model": "019a1111-1111-7111-8111-111111111111/gpt-6-luna",
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "What does the note say?"},
+      {"type": "file", "file": {"filename": "note.txt", "file_data": "data:text/plain;base64,SGVsbG8h"}}
+    ]
+  }]
+}
 ```
 
 Responses use standard `chat.completion` objects, assistant messages, function calls, finish reasons and token usage. The optional `provider_router` extension records the actual connection, upstream model, provider, implementation method and reasoning effort. Standard SDKs can ignore this extension.
@@ -56,26 +57,61 @@ With `stream: true`, the service returns `chat.completion.chunk` SSE frames, a f
 
 ## POST /v1/responses
 
-Supported request fields are `model`, `instructions`, `input`, `tools`, `tool_choice`, `parallel_tool_calls`, `text.format`, `reasoning.effort`, `max_output_tokens`, `stream` and `store: false`. Input accepts a string, role-bearing text messages, `function_call` items and their matching `function_call_output` items. Tools use Responses' flat function shape. `text.format.type = "json_schema"` requests structured output.
+Supported request fields are `model`, `instructions`, `input`, `tools`, `tool_choice`, `parallel_tool_calls`, `text.format`, `reasoning.effort`, `max_output_tokens`, `stream` and `store: false`. Input accepts a string, role-bearing messages, `function_call` items and their matching `function_call_output` items. User messages accept inline `input_file` blocks. Tools use Responses' flat function shape. `text.format.type = "json_schema"` requests structured output.
 
-```javascript
-const answer = await client.responses.create({
-  model: models.data[0].id,
-  instructions: 'Answer the user briefly.',
-  input: 'What is seven plus seven?',
-  reasoning: { effort: 'low' },
-  store: false,
-});
-console.log(answer.output_text);
+```json
+{
+  "model": "019a1111-1111-7111-8111-111111111111/gpt-6-luna",
+  "input": [{
+    "role": "user",
+    "content": [
+      {"type": "input_text", "text": "What does the note say?"},
+      {"type": "input_file", "filename": "note.txt", "file_data": "data:text/plain;base64,SGVsbG8h"}
+    ]
+  }],
+  "store": false
+}
 ```
 
-Completed responses use `object: "response"`, `status: "completed"`, standard message/function output items and Responses usage fields. SSE emits standard response, output-item, content-part, text/function-argument and completion events. Inference is stateless: send authoritative history on every request. Response retrieval, stored conversation IDs, background Responses, provider-native encrypted reasoning state, images, files, audio and other unrepresented options are rejected rather than discarded. Unsupported request fields produce a standard OpenAI error object.
+Completed responses use `object: "response"`, `status: "completed"`, standard message/function output items and Responses usage fields. SSE emits standard response, output-item, content-part, text/function-argument and completion events. Send authoritative history on every request. Response retrieval, stored conversation IDs, background Responses, provider-native encrypted reasoning state, standalone image and audio inputs, and unsupported request fields produce a standard OpenAI error object.
+
+## POST /v1/attachment-checks
+
+Send a Chat Completions request body with the intended model and attachments to validate file types, extraction limits and model image support locally. The endpoint uses the same client authentication. Use a fresh UUIDv7 `X-Request-ID` for each call if you supply correlation IDs. Success returns a `chat.completion` with assistant content `"Attachments fit the request."` and zero token usage. Send a separate inference request for the model answer.
+
+```json
+{
+  "model": "019a1111-1111-7111-8111-111111111111/gpt-6-luna",
+  "messages": [{
+    "role": "user",
+    "content": [{"type": "file", "file": {"filename": "note.txt", "file_data": "data:text/plain;base64,SGVsbG8h"}}]
+  }]
+}
+```
+
+## Attachment formats and limits
+
+Send a filename and a base64 data URL with the media type for its extension. Supported extensions are `.pdf`, `.docx`, `.txt`, `.md`, `.markdown`, `.csv` and `.xlsx`. Remote URLs and uploaded file IDs are unsupported. Router extracts attachments locally for both Codex and OpenRouter. It gives the model one user message per file, with the filename, extracted text and any images, immediately before the user message that included the files. Only the extracted content goes to the selected provider.
+
+- PDFs supply available page text and a JPEG rendering of each page. The images let a vision model read scanned text and see tables, charts and page layout.
+- DOCX supplies text, tables and supported embedded images. Text and Markdown supply their original UTF-8 text.
+- XLSX supplies a grid for each sheet with spreadsheet column letters and row numbers. Cells use stored values where available, and formulas are included separately without recalculation. CSV supplies one grid with the same coordinates and preserves quoted fields.
+
+The limits apply across all attachments in a request. Router rejects content that exceeds a limit before sending anything to the provider.
+
+| Error code | HTTP status | Limit |
+| --- | --- | --- |
+| `FILE_REQUEST_LIMIT` | 413 | Up to five files, 10 MiB per file, and 25 MiB combined before base64 encoding. |
+| `FILE_CONTEXT_LIMIT` | 413 | Up to 256 KiB of extracted UTF-8 text including filenames and labels, reduced if the model advertises a smaller context window. Up to 20 images and 12 MiB of encoded image data URLs across the request, and up to 20 pages per PDF. The text cap measures bytes. |
+| `REQUEST_TOO_LARGE` | 413 | Up to 36 MiB for the complete JSON request. |
+
+PDFs and documents with extracted images require a model that advertises image inputs. Otherwise Router returns `FILE_IMAGES_UNSUPPORTED`. A file whose extension or media type is unsupported returns `FILE_TYPE_UNSUPPORTED`. Empty or unreadable documents return `FILE_UNREADABLE`.
 
 ## GET /v1/providers
 
 This extension returns `{"protocol_version":1,"providers":[...]}`. Each provider entry contains `id`, `name`, `provider`, `method` and `models`. A model includes `id`, `name`, `reasoning_efforts`, `default_reasoning_effort`, `context_window`, `max_output_tokens`, `tools`, `structured_output` and `input_modalities`. The model's ID in this extension is its upstream ID; `/v1/models` publishes the qualified SDK ID.
 
-OpenRouter reasoning choices come from the published model catalog. Codex choices come from the authenticated subscription catalog. Codex inference uses direct subscription HTTP (`codex_http`); legacy CLI connections retain their identities and migrate automatically. Text is the only exposed input modality in version 1. If a catalog omits a maximum output size, Router applies a conservative local cap of one fifth of the context size; this is a Router policy cap, not a claim about the provider's native limit. Codex output budgets are checked after completion because these transports do not expose a supported hard output cap; a budget does not cap upstream billing or subscription usage.
+OpenRouter reasoning choices come from the published model catalog. Codex choices come from the authenticated subscription catalog. Codex inference uses direct subscription HTTP (`codex_http`); legacy CLI connections retain their identities and migrate automatically. The `image` modality indicates support for images extracted from attachments. If a catalog omits a maximum output size, Router applies a conservative local cap of one fifth of the context size; this is a Router policy cap, not a claim about the provider's native limit. Codex output budgets are checked after completion because these transports do not expose a supported hard output cap; a budget does not cap upstream billing or subscription usage.
 
 ## Request cancellation and errors
 

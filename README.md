@@ -5,6 +5,7 @@ Provider Router is an independent, MIT-licensed desktop application that exposes
 - Automatically detect native Codex CLI installations and Windows WSL logins when opening or refreshing settings.
 - Call the Codex subscription API directly using an existing Codex login, without launching a coding agent for inference.
 - Connect OpenRouter with your own API key.
+- Send PDF, DOCX, text, Markdown, CSV, and XLSX attachments to compatible Codex and OpenRouter models.
 - Choose which connections and models to expose, restrict allowed thinking efforts, and optionally issue separate revocable keys to client applications.
 - Approve exact website origins to use local providers from hosted web applications, and check connectivity without making an inference call.
 - Keep the API running in the background while the settings window is closed.

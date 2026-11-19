@@ -19,6 +19,24 @@ pnpm run dist:mac
 
 Windows packages target x64 and ARM64 NSIS installers. macOS packages target Intel and Apple Silicon DMG and ZIP artifacts. Build macOS packages on macOS. Linux distributions are excluded. Packages are unsigned. GitHub release metadata powers the installed Windows application's explicit download and restart controls. On macOS, the app opens the release downloads for manual installation. A development source checkout does not check for updates.
 
+## Verify document attachments
+
+`pnpm test tests/documents.test.ts` checks extraction from a PDF with a rotated scanned page, DOCX text and embedded images, XLSX cell coordinates, cached values and formulas, and CSV quoting. It also checks the attachment limits and support for image inputs. The SDK tests cover inline attachments on Chat Completions and Responses and verify the extracted messages sent to simulated upstream providers.
+
+To include public documents, set `PROVIDER_ROUTER_PUBLIC_FIXTURES` to a directory with the following files and run `PROVIDER_ROUTER_PUBLIC_FIXTURES=/path/to/fixtures pnpm test tests/documents.test.ts`. Page numbers are one-based positions in the original PDF.
+
+| Fixture | Source and pages |
+| --- | --- |
+| `isa-excerpt.pdf` | [ISA integrated report 2024](https://isa.co/wp-content/uploads/2026/02/reporte-integrado-isa-2024.pdf), pages 1, 4, 6 and 8 |
+| `xm.pdf` | [XM's RIO guide for entering DDV offers](https://www.xm.com.co/sites/default/files/documents/Instructivo%20RIO-Ingreso%20de%20oferta%20DDV.pdf), all 14 pages |
+| `epm-excerpt.pdf` | [EPM consolidated financial statements for 2025](https://www.epm.com.co/content/dam/epm/inversionistas/estados-financieros/estados-financieros-grupoepm/2025/Grupo_EPM_EEFF_Consolidados_certificaci%C3%B3n_informe_del_auditor_y_Notas_al_31-12-2025.pdf), pages 2, 3, 8 and 21 |
+| `ecopetrol-excerpt.pdf` | [Ecopetrol third-quarter 2026 report](https://files.ecopetrol.com.co/web/esp/inversionista/reporte-3t2026/reporte-3t-2026.pdf), pages 2, 3, 8 and 13 |
+| `xm-payment-template.xlsx` | [XM's payment deferral request form](https://www.xm.com.co/sites/default/files/inline-files/Solicitud%20aplicaci%C3%B3n%20Art%C3%ADculo%206%C2%B0%20de%20la%20Resoluci%C3%B3n%20CREG%20101%20029%20de%202022.xlsx), one sheet |
+
+In the Attalid monorepo, `backends/antikythera-back/tests/integration/test_provider_router_attachments.py` exercises the Chat upload route, the agent model pipeline, both Router adapters with simulated upstream responses, and rejection of oversized files before chat admission.
+
+For live verification, connect a development Antikythera session to an exposed vision-capable model, attach synthetic or public files, and ask for a fact found only in each file. For example, ask for the identifier on the rotated scanned page of `attachment-layout.pdf` and the value at `Dispatch!D4` in `attachment-workbook.xlsx`. The expected answers are `SCAN-ONLY-583` and `250`. Stop the rehearsal process and remove its temporary settings when finished.
+
 ## Publish a release
 
 GitHub Actions runs type checks, tests, and a build on pull requests targeting `main` and pushes to `main`. To build downloadable Windows and macOS installers for testing without publishing a release, run **Provider Router CI and release** manually from the Actions tab and download the run's artifacts.

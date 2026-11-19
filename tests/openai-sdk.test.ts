@@ -67,6 +67,23 @@ describe('OpenAI SDK compatibility', (): void => {
     expect(result.object).toBe('response'); expect(result.status).toBe('completed'); expect(result.output_text).toBe('{"answer":42}'); expect(lastRequest?.messages[0]).toMatchObject({ role: 'system', content: 'Synthetic instruction' }); expect(lastRequest?.messages.at(-1)?.tool_call_id).toBe('old-call');
   });  // RevExt: 15
 // RevExt: 8
+  it('accepts inline document data in both SDK surfaces and sends only extracted content', async (): Promise<void> => {
+    const filename: string = 'summary.txt';
+    const file_data: string = `data:text/plain;base64,${Buffer.from('Synthetic value 42').toString('base64')}`;
+    await client.chat.completions.create({ model: selected, messages: [{ role: 'user', content: [
+      { type: 'text', text: 'What is the value?' }, { type: 'file', file: { filename, file_data } },
+    ] }] });  // RevExt: 21
+    const chatMessages = lastRequest?.messages;
+    expect(chatMessages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: expect.stringContaining(filename) }, { type: 'text', text: 'Synthetic value 42' }] },
+      { role: 'user', content: [{ type: 'text', text: 'What is the value?' }] },
+    ]);
+    await client.responses.create({ model: selected, input: [{ role: 'user', content: [
+      { type: 'input_text', text: 'What is the value?' }, { type: 'input_file', filename, file_data },
+    ] }] });  // RevExt: 22
+    expect(lastRequest?.messages).toEqual(chatMessages);
+  });  // RevExt: 20
+// RevExt: 19
   it('streams standard Responses text and completion events', async (): Promise<void> => {
     const stream = await client.responses.create({ model: selected, input: 'Synthetic question', stream: true });
     const events: string[] = []; let content: string = ''; let completed: boolean = false;
