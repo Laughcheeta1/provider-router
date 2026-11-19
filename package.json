@@ -61,6 +61,7 @@
       }
     ],
     "win": {
+      "icon": "build/icon.png",
       "signExecutable": false,
       "target": [
         {
@@ -78,6 +79,7 @@
       "perMachine": false
     },
     "mac": {
+      "icon": "build/icon.png",
       "target": [
         {
           "target": "dmg",

@@ -1,0 +1,128 @@
+name: Provider Router CI and release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/setup@9a03ad2bcf699975e2bfd1b2b9d3c54f76b1a56b # v3
+        with:
+          runtime: node@24
+      - name: Verify release version
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "The tag must match the stable version in package.json (v$version)."
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
+
+  packages:
+    needs: checks
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag' && !github.event.deleted)
+    strategy:
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows
+            script: dist:win
+          - runner: macos-latest
+            platform: macos
+            script: dist:mac
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/setup@9a03ad2bcf699975e2bfd1b2b9d3c54f76b1a56b # v3
+        with:
+          runtime: node@24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run ${{ matrix.script }} --config.directories.output=release
+      - name: Verify Windows installers and update assets
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $installer = "provider-router-${version}-win.exe"
+          $manifest = Get-Content release/latest.yml -Raw
+          if ($manifest -notmatch "(?m)^version: $([regex]::Escape($version))\r?$" -or
+              $manifest -notmatch [regex]::Escape($installer) -or
+              -not (Test-Path -LiteralPath "release/$installer" -PathType Leaf)) {
+            throw "The Windows release is missing its installer or matching update manifest."
+          }
+          foreach ($file in Get-ChildItem -Path release -Filter '*.exe' -File) {
+            if (-not (Test-Path -LiteralPath "$($file.FullName).blockmap" -PathType Leaf)) {
+              throw "Missing block map for $($file.Name)."
+            }
+            & 'C:\Program Files\7-Zip\7z.exe' t $file.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Invalid installer $($file.Name)." }
+          }
+      - name: Verify macOS disk images and archives
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          images=(release/*.dmg)
+          archives=(release/*.zip)
+          if (( ${#images[@]} != 2 || ${#archives[@]} != 2 )); then
+            echo "Expected one macOS disk image and ZIP for each supported architecture."
+            exit 1
+          fi
+          for image in "${images[@]}"; do hdiutil verify "$image"; done
+          for archive in "${archives[@]}"; do unzip -tq "$archive"; done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: matrix.platform == 'windows'
+        with:
+          name: provider-router-windows
+          path: |
+            release/*.exe
+            release/*.exe.blockmap
+            release/latest.yml
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: matrix.platform == 'macos'
+        with:
+          name: provider-router-macos
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: packages
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !github.event.deleted
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: provider-router-windows
+          path: assets
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: provider-router-macos
+          path: assets
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" assets/* --verify-tag --generate-notes

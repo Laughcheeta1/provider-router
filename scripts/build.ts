@@ -4,6 +4,7 @@ import { cp, mkdir, rm } from 'node:fs/promises';
 // RevExt: 1
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist', { recursive: true });
+await cp('build/icon.png', 'dist/icon.png');
 await build({ entryPoints: { main: 'src/app/bootstrap.ts', preload: 'src/app/preload.ts', 'smoke-server': 'scripts/smoke-server.ts' }, outdir: 'dist', outExtension: { '.js': '.cjs' }, bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['electron', '@napi-rs/keyring', 'fs-native-extensions', 'electron-updater'] });
 await build({ entryPoints: ['src/app/products/router/presentation/settings.ts'], outfile: 'dist/renderer/settings.js', bundle: true, platform: 'browser', format: 'iife', target: 'chrome140' });
 await cp('src/app/products/router/presentation/index.html', 'dist/renderer/index.html');

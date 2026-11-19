@@ -27,11 +27,12 @@ let startupError: string | null = null;
 let store: RouterStore;
 let adapters: Record<Method, ProviderAdapter>;
 let quitting: boolean = false;
+const iconPath: string = path.join(app.getAppPath(), 'dist', 'icon.png');
 const renderer: string = path.join(app.getAppPath(), 'dist', 'renderer', 'index.html');
 /** Closing settings keeps the independent API available to every authorized client. */
 async function showSettings(): Promise<void> {
   if (window) { window.show(); window.focus(); return; }
-  window = new BrowserWindow({ title: 'Provider Router', width: 1050, height: 820, minWidth: 720, minHeight: 600, backgroundColor: '#000000', webPreferences: { preload: path.join(app.getAppPath(), 'dist', 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, webviewTag: false } });
+  window = new BrowserWindow({ icon: iconPath, title: 'Provider Router', width: 1050, height: 820, minWidth: 720, minHeight: 600, backgroundColor: '#000000', webPreferences: { preload: path.join(app.getAppPath(), 'dist', 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, webviewTag: false } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event): void => event.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback): void => callback(false));

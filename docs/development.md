@@ -17,7 +17,20 @@ pnpm run dist:win
 pnpm run dist:mac
 ```
 
-Windows packages target x64 and ARM64 NSIS installers; macOS packages target Intel and Apple Silicon DMG and ZIP artifacts. Build macOS packages on macOS. Linux distributions are excluded. Packages are unsigned. GitHub release metadata powers the installed Windows application's explicit download/restart update controls; unsigned macOS releases open the release downloads for manual installation. Automatic release publication and signing are separately managed. A development source checkout does not check for updates.
+Windows packages target x64 and ARM64 NSIS installers. macOS packages target Intel and Apple Silicon DMG and ZIP artifacts. Build macOS packages on macOS. Linux distributions are excluded. Packages are unsigned. GitHub release metadata powers the installed Windows application's explicit download and restart controls. On macOS, the app opens the release downloads for manual installation. A development source checkout does not check for updates.
+
+## Publish a release
+
+GitHub Actions runs type checks, tests, and a build on pull requests targeting `main` and pushes to `main`. To build downloadable Windows and macOS installers for testing without publishing a release, run **Provider Router CI and release** manually from the Actions tab and download the run's artifacts.
+
+To ship a stable version, update `version` in `package.json`, merge the change, and tag the exact commit you want to ship. For example, if that commit sets the version to `0.1.1`:
+
+```sh
+git tag -a v0.1.1 -m "Provider Router 0.1.1"
+git push origin v0.1.1
+```
+
+A pushed tag must match the stable version in `package.json`. After the checks and both platform builds pass, the workflow publishes a GitHub Release with the Windows installers, `latest.yml`, matching `.exe.blockmap` files, and macOS DMG and ZIP files. The Windows updater uses the manifest to locate and verify the installer and uses the block maps for differential downloads when available.
 
 `pnpm run build` produces `dist/main.cjs`, the isolated `dist/preload.cjs`, the settings renderer, and a headless rehearsal service. Production settings use Electron's operating-system-backed `safeStorage`; saving provider secrets fails when encryption is unavailable. Client keys are hashed, provider keys are encrypted, and discovery contains no secrets. Existing Codex credentials stay in Codex's own configured store.
 
