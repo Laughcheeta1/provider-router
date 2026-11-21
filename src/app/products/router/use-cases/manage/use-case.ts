@@ -3,7 +3,8 @@ import { RouterError, type Connection, type DetectedProvider, type Model } from 
 import type { ProviderService } from '../../../../services/provider-service/service.ts';
 import type { RouterRepository } from '../../repository/settings/contract.ts';
 import { validateNetwork } from '../../network-policy.ts';
-import type { SettingsCommand, SettingsReply, SettingsSnapshot } from '../../schemas/settings-contract.ts';
+import type { RouterStatus, SettingsCommand, SettingsReply, SettingsSnapshot } from '../../schemas/settings-contract.ts';
+import type { StartupMode } from '../../schemas/state.ts';
 export interface SettingsRuntime {
   endpoint(): string | null;
   error(): string | null;
@@ -12,15 +13,17 @@ export interface SettingsRuntime {
   platform: NodeJS.Platform;
   revokeClient(id: string): Promise<void>;
   restart(): Promise<void>;
+  saveStartup(mode: StartupMode): Promise<void>;
   checkUpdates(): Promise<void>;
 }
 export class ManageUseCase {
   constructor(private readonly repository: RouterRepository, private readonly providers: ProviderService, private readonly runtime: SettingsRuntime) {}
   async execute(command: SettingsCommand): Promise<SettingsReply> {
+    if (command.type === 'status') return { ok: true, value: this.status() };
     if (command.type === 'snapshot') {
       const distributions: string[] = await this.runtime.distributions();
       const detected: DetectedProvider[] = await this.runtime.discover(distributions);
-      return { ok: true, value: { ...this.repository.publicState(), endpoint: this.runtime.endpoint() || null, error: this.runtime.error(), wsl_distributions: distributions, platform: this.runtime.platform, detected_providers: detected } satisfies SettingsSnapshot };
+      return { ok: true, value: { ...this.status(), wsl_distributions: distributions, platform: this.runtime.platform, detected_providers: detected } satisfies SettingsSnapshot };
     }  // RevExt: 1
     if (command.type === 'save_connection') { await this.repository.saveConnection(command.connection, command.api_key); return { ok: true, value: null }; }
     if (command.type === 'remove_connection') { await this.repository.removeConnection(command.id); return { ok: true, value: null }; }
@@ -33,7 +36,12 @@ export class ManageUseCase {
     if (command.type === 'create_client') return { ok: true, value: await this.repository.createClient(command.name) };
     if (command.type === 'revoke_client') { await this.runtime.revokeClient(command.id); return { ok: true, value: null }; }
     if (command.type === 'save_network') { validateNetwork(command.network); await this.repository.saveNetwork(command.network); await this.runtime.restart(); return { ok: true, value: null }; }
+    if (command.type === 'save_startup') { await this.runtime.saveStartup(command.mode); return { ok: true, value: null }; }
     await this.runtime.checkUpdates();
     return { ok: true, value: null };
+  }
+
+  private status(): RouterStatus {
+    return { ...this.repository.publicState(), endpoint: this.runtime.endpoint(), error: this.runtime.error() };
   }
 }

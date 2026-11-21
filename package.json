@@ -2,24 +2,19 @@
   "name": "provider-router",
   "version": "0.1.0",
   "private": true,
-  "description": "Expose your locally configured inference providers through one API",
+  "description": "Reference test harness for the previous Provider Router implementation",
   "author": "Provider Router contributors",
+  "homepage": "https://github.com/Laughcheeta1/provider-router",
+  "desktopName": "provider-router-desktop.desktop",
   "license": "MIT",
   "type": "module",
-  "main": "dist/main.cjs",
   "packageManager": "pnpm@12.5.1",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "node scripts/build.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "setup:runtime": "pnpm exec install-electron",
-    "dev": "pnpm run build && pnpm run setup:runtime && electron .",
-    "start": "pnpm run setup:runtime && electron .",
-    "dist:win": "pnpm run build && electron-builder --win --publish never",
-    "dist:mac": "pnpm run build && electron-builder --mac --publish never"
+    "test": "vitest run"
   },
   "dependencies": {
     "@napi-rs/canvas": "1.1.1",
@@ -41,74 +36,5 @@
     "openai": "^7.53.0",
     "typescript": "^5.7.2",
     "vitest": "^4.1.10"
-  },
-  "build": {
-    "npmRebuild": false,
-    "appId": "org.providerrouter.desktop",
-    "productName": "Provider Router",
-    "artifactName": "provider-router-${version}-${os}-${arch}.${ext}",
-    "files": [
-      "dist/**/*",
-      "package.json",
-      "LICENSE",
-      "NOTICE.md"
-    ],
-    "asarUnpack": [
-      "**/*.node"
-    ],
-    "protocols": [
-      {
-        "name": "Provider Router",
-        "schemes": [
-          "provider-router"
-        ]
-      }
-    ],
-    "win": {
-      "icon": "build/icon.png",
-      "signExecutable": false,
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false
-    },
-    "mac": {
-      "icon": "build/icon.png",
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
-      "identity": null,
-      "category": "public.app-category.developer-tools"
-    },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "Laughcheeta1",
-        "repo": "provider-router"
-      }
-    ]
   }
 }

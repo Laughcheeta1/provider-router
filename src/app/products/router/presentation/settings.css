@@ -116,6 +116,7 @@ select { cursor: pointer; padding-right: 25px; }
 #new-key p { font-size: 11px; margin-bottom: 12px; }
 #client-token { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 11px; margin-bottom: 11px; }
 .endpoint-label { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); font-size: 10px; padding: 11px 12px; margin-top: 17px; overflow-wrap: anywhere; }
+.api-runtime { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin: 16px 0 20px; }
 .status-message { border: 1px solid rgb(245 181 85 / 22%); border-radius: 7px; background: #15110a; color: #e3bf88; padding: 10px 12px; font-size: 11px; line-height: 1.5; margin-bottom: 20px; }
 .status-message:empty { display: none; }
 .content-footer { display: flex; justify-content: space-between; border-top: 1px solid var(--border); padding-top: 17px; color: #525252; font-size: 10px; }

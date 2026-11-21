@@ -1,0 +1,69 @@
+[package]
+name = "provider-router"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+description = "Local OpenAI-compatible inference router with a native terminal application"
+
+[lib]
+path = "native/lib.rs"
+
+[[bin]]
+name = "provider-router"
+path = "native/main.rs"
+
+[features]
+manual-installers = []
+
+[dependencies]
+aes-gcm = "0.10"
+anyhow = "1"
+async-stream = "0.3"
+axum = "0.8"
+base64 = "0.22"
+calamine = "0.36"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4.5", features = ["derive"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+csv = "1"
+dirs = "6"
+fs2 = "0.4"
+futures-util = "0.3"
+hayro = "0.9"
+hex = "0.4"
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+jsonschema = { version = "0.30", default-features = false }
+quick-xml = "0.40"
+ratatui = "0.29"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2.6"
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+toml = "0.9"
+url = "2"
+uuid = { version = "1", features = ["serde", "v7"] }
+zip = { version = "7", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "vendored"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
+
+[profile.release]
+strip = "symbols"

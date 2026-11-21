@@ -13,7 +13,7 @@ it('rejects insecure settings before persistence and retains valid settings afte
   try {  // RevExt: 3
     const store: RouterStore = await RouterStore.open(directory, { encrypt: Buffer.from, decrypt: (value: Buffer): string => value.toString() });  // RevExt: 5
     const providers: ProviderService = { checkAttachments: async (): Promise<never> => { throw new Error('unused'); }, infer: async (): Promise<never> => { throw new Error('unused'); }, models: async () => [] };  // RevExt: 7
-    const runtime: SettingsRuntime = { endpoint: () => null, error: () => null, distributions: async () => [], discover: async () => [], platform: 'linux', revokeClient: (id: string): Promise<void> => store.revokeClient(id), restart: async (): Promise<never> => { throw new Error('port unavailable'); }, checkUpdates: async () => {} };
+    const runtime: SettingsRuntime = { endpoint: () => null, error: () => null, distributions: async () => [], discover: async () => [], platform: 'linux', revokeClient: (id: string): Promise<void> => store.revokeClient(id), restart: async (): Promise<never> => { throw new Error('port unavailable'); }, saveStartup: async () => {}, checkUpdates: async () => {} };
     const useCase: ManageUseCase = new ManageUseCase(store, providers, runtime);
     const original: ReturnType<RouterStore['publicState']>['network'] = store.publicState().network;
     for (const invalid of ['*', 'null', 'https://example.com/path', 'https://example.com/', 'http://remote.example']) {
@@ -39,7 +39,7 @@ it('returns discovery in settings without persisting or exposing a detected prov
     const runtime: SettingsRuntime = {
       endpoint: () => null, error: () => null, distributions: async () => ['Ubuntu'], platform: 'win32',
       discover: async (distributions: readonly string[]) => distributions.map((distribution: string) => ({ connection: { id: '019a6b00-0000-7000-8000-000000000001', name: 'Codex', method: 'codex_http' as const, environment: 'wsl' as const, wsl_distribution: distribution, exposed: false, models: [] }, status: 'ready' as const, detail: 'Existing Codex login detected.' })),
-      revokeClient: async () => {}, restart: async () => {}, checkUpdates: async () => {},
+      revokeClient: async () => {}, restart: async () => {}, saveStartup: async () => {}, checkUpdates: async () => {},
     };
     const reply: SettingsReply = await new ManageUseCase(store, providers, runtime).execute({ type: 'snapshot' });
     expect(reply).toMatchObject({ ok: true, value: { detected_providers: [{ status: 'ready', connection: { wsl_distribution: 'Ubuntu', exposed: false } }], connections: [] } });

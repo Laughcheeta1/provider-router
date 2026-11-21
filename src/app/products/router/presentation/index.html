@@ -33,6 +33,16 @@
         <section hidden id="api-access" aria-labelledby="api-access-title">
           <div class="section-heading"><h2 id="api-access-title">API access</h2></div>
           <p id="endpoint" class="endpoint-label"></p>
+          <div class="api-runtime">
+            <label>Startup behavior
+              <select id="startup-mode">
+                <option value="startup">Run on startup</option>
+                <option value="keep-after-open">Keep running after open</option>
+                <option value="while-open">Run only while open</option>
+              </select>
+            </label>
+            <button type="button" id="toggle-api">Stop API</button>
+          </div>
           <form id="network">
             <label class="check full-width"><input type="checkbox" name="require_api_key"><span>Require client API keys</span></label>
             <label>Listener host<input name="host" required spellcheck="false"></label><label>Port<input type="number" min="1" max="65535" name="port" required></label>
@@ -470,7 +480,7 @@ JSON</code></pre>
     "param": null
   }
 }</code></pre>
-          <dl><dt>Connection refused</dt><dd>Open Router, check the API access endpoint and startup error, and confirm the port matches your client. Closing settings keeps Router running; Quit stops it.</dd><dt>HTTP 401</dt><dd>Send a current Router client API key, or disable key requirements in API access for local use. Provider keys and Codex credentials are separate.</dd><dt>HTTP 403 in a browser</dt><dd>Add the website’s exact HTTPS origin to Approved website origins in API access, without a path or trailing slash. Use the loopback endpoint and allow local-network access when your browser asks. Native clients do not need origin approval.</dd><dt>No models or unavailable model</dt><dd>In Providers, select a model, Save and enable its provider. Refresh discovery if needed, then copy a current qualified ID from /v1/models.</dd><dt>Invalid thinking effort or unsupported option</dt><dd>Use an effort listed in the model metadata, or omit it for the configured default. Only text input is supported. Images, audio, files, background Responses and stored conversation state are rejected.</dd><dt>HTTP 429 or provider failure</dt><dd>Wait for active requests to finish. For provider authentication failures, repair the selected account login. Router does not switch accounts or providers automatically.</dd></dl>
+          <dl><dt>Connection refused</dt><dd>Open Router, check the API access endpoint and startup error, and confirm the port matches your client. Startup behavior controls when the Router starts and stops.</dd><dt>HTTP 401</dt><dd>Send a current Router client API key, or disable key requirements in API access for local use. Provider keys and Codex credentials are separate.</dd><dt>HTTP 403 in a browser</dt><dd>Add the website’s exact HTTPS origin to Approved website origins in API access, without a path or trailing slash. Use the loopback endpoint and allow local-network access when your browser asks. Native clients do not need origin approval.</dd><dt>No models or unavailable model</dt><dd>In Providers, select a model, Save and enable its provider. Refresh discovery if needed, then copy a current qualified ID from /v1/models.</dd><dt>Invalid thinking effort or unsupported option</dt><dd>Use an effort listed in the model metadata, or omit it for the configured default. Only text input is supported. Images, audio, files, background Responses and stored conversation state are rejected.</dd><dt>HTTP 429 or provider failure</dt><dd>Wait for active requests to finish. For provider authentication failures, repair the selected account login. Router does not switch accounts or providers automatically.</dd></dl>
           <h3>Additional endpoints and limits</h3>
           <p>Inspect enabled provider connections and their upstream model IDs:</p>
           <pre><code>curl  "$BASE/v1/providers" \

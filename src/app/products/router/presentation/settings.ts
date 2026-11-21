@@ -1,8 +1,8 @@
 /** Render safe settings values and explicit mutations through the injected IPC port. */
 import type { Connection, Method, Model } from '../../../common/schemas/contracts.ts';
-import type { SettingsBridge, SettingsCommand, SettingsReply, SettingsSnapshot } from '../schemas/settings-contract.ts';
+import type { DesktopSettingsBridge, DesktopCommand, SettingsReply, SettingsSnapshot } from '../schemas/settings-contract.ts';
 // RevExt: 1
-declare global { interface Window { providerRouter: SettingsBridge } }
+declare global { interface Window { providerRouter: DesktopSettingsBridge } }
 const status: HTMLElement = element('status');
 const methods: Record<Method, string> = { codex_cli: 'Codex · Direct', codex_http: 'Codex · Direct', openrouter_http: 'OpenRouter' };
 let snapshot: SettingsSnapshot | null = null;
@@ -25,13 +25,15 @@ async function perform(action: () => Promise<void>): Promise<void> {
   try { await action(); } catch (error: unknown) { const target: HTMLElement = (element('provider-dialog') as HTMLDialogElement).open ? element('dialog-status') : status; target.textContent = error instanceof Error ? error.message : 'The operation failed.'; }
   finally { pending = false; controls.forEach((control, index): void => { control.disabled = disabled[index]!; }); element('refresh').removeAttribute('aria-busy'); }
 }  // RevExt: 13
-async function invoke(command: SettingsCommand): Promise<Extract<SettingsReply, { ok: true }>['value']> { const reply: SettingsReply = await window.providerRouter.invoke(command); if (!reply.ok) throw new Error(reply.error); return reply.value; }
+async function invoke(command: DesktopCommand): Promise<Extract<SettingsReply, { ok: true }>['value']> { const reply: SettingsReply = await window.providerRouter.invoke(command); if (!reply.ok) throw new Error(reply.error); return reply.value; }
 // RevExt: 4
 async function refresh(): Promise<void> {
   snapshot = await invoke({ type: 'snapshot' }) as SettingsSnapshot;
   status.textContent = snapshot.error || '';
   updateEnvironmentFields();  // RevExt: 21
   element('endpoint').textContent = snapshot.endpoint || 'API is stopped.';
+  element('toggle-api').textContent = snapshot.endpoint ? 'Stop API' : 'Start API';
+  (element('startup-mode') as HTMLSelectElement).value = snapshot.startup_mode;
   element('key-policy').textContent = snapshot.network.require_api_key ? 'Applications must send one of these keys.' : 'Keys are optional. Enable key requirements in API access to restrict applications.';
   renderProviders();
   const clients: HTMLElement = element('clients'); clients.replaceChildren();
@@ -183,6 +185,19 @@ element('dismiss-key').onclick = (): void => { (element('client-token') as HTMLI
   event.preventDefault(); const form: HTMLFormElement = event.currentTarget as HTMLFormElement;
   void perform(async (): Promise<void> => { const client = await invoke({ type: 'create_client', name: input(form, 'name').value }) as { id: string; token: string }; (element('client-token') as HTMLInputElement).value = client.token; element('new-key').hidden = false; form.reset(); await refresh(); });
 };  // RevExt: 33
+element('toggle-api').onclick = (): void => {
+  void perform(async (): Promise<void> => { await invoke({ type: snapshot?.endpoint ? 'stop_api' : 'start_api' }); await refresh(); });
+};
+const startupMode: HTMLSelectElement = element('startup-mode') as HTMLSelectElement;
+startupMode.onchange = (): void => {
+  const mode: string = startupMode.value;
+  if (mode === 'startup' || mode === 'keep-after-open' || mode === 'while-open') {
+    void perform(async (): Promise<void> => {
+      try { await invoke({ type: 'save_startup', mode }); }
+      finally { await refresh(); }
+    });
+  }
+};
 (element('network') as HTMLFormElement).onsubmit = (event: SubmitEvent): void => {
   event.preventDefault(); const form: HTMLFormElement = event.currentTarget as HTMLFormElement;
   void perform(async (): Promise<void> => { await invoke({ type: 'save_network', network: { browser_origins: (form.elements.namedItem('browser_origins') as HTMLTextAreaElement).value.split(/\r?\n/).map((origin: string): string => origin.trim()).filter(Boolean), require_api_key: input(form, 'require_api_key').checked, port: Number(input(form, 'port').value), host: input(form, 'host').value.trim() } }); await refresh(); });
@@ -191,6 +206,7 @@ element('dismiss-key').onclick = (): void => { (element('client-token') as HTMLI
 /** Renderer identity generation uses only browser cryptography; it never receives Node. */
 function uuidV7(): string { const bytes: Uint8Array = crypto.getRandomValues(new Uint8Array(16)); let timestamp: number = Date.now(); for (let index: number = 5; index >= 0; index--) { bytes[index] = timestamp % 256; timestamp = Math.floor(timestamp / 256); } bytes[6] = bytes[6]! & 0x0f | 0x70; bytes[8] = bytes[8]! & 0x3f | 0x80; const value: string = [...bytes].map((byte: number): string => byte.toString(16).padStart(2, '0')).join(''); return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`; }
 window.addEventListener('hashchange', navigate);
+window.providerRouter.onShow((): void => { void perform(refresh); });
 navigate();
 // RevExt: 43
 element('close-provider').onclick = (): void => { (element('provider-dialog') as HTMLDialogElement).close(); };

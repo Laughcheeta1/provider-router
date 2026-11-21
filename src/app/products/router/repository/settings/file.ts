@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { connectionSchema, RouterError, uuidSchema, type Connection } from '../../../../common/schemas/contracts.ts';
 import { uuid7 } from '../../../../common/identity/identity.ts';
 
-import { networkSchema, stateSchema, type State, type Client, type NetworkSettings, type PublicState } from '../../schemas/state.ts';
+import { networkSchema, stateSchema, type State, type Client, type NetworkSettings, type PublicState, type StartupMode } from '../../schemas/state.ts';
 import type { RouterRepository } from './contract.ts';
 export { networkSchema, type Client, type NetworkSettings, type PublicState } from '../../schemas/state.ts';
 export interface SecretCipher { encrypt(value: string): Buffer; decrypt(value: Buffer): string }
@@ -17,7 +17,7 @@ export class RouterStore implements RouterRepository {
   private writes: Promise<void> = Promise.resolve();
   private constructor(private readonly file: string, private readonly cipher: SecretCipher, state: State) { this.state = state; }
 
-  static async open(directory: string, cipher: SecretCipher): Promise<RouterStore> {
+  static async open(directory: string, cipher: SecretCipher, persistNew: boolean = false): Promise<RouterStore> {
     const file: string = path.join(directory, 'settings.json');
     let state: State;
     let migrated: boolean = false;
@@ -34,7 +34,8 @@ export class RouterStore implements RouterRepository {
     }  // RevExt: 1
     catch (error: unknown) {
       if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw new RouterError('SETTINGS_INVALID', 'The local configuration could not be read. Restore or repair it before starting.', 500);
-      state = { version: 1, instance_id: uuid7(), connections: [], clients: [], secrets: {}, network: networkSchema.parse({}) };
+      state = stateSchema.parse({ version: 1, instance_id: uuid7(), connections: [], clients: [], secrets: {}, network: {} });
+      migrated = persistNew;
     }  // RevExt: 2
     const store: RouterStore = new RouterStore(file, cipher, state);
     if (migrated) await store.update((): void => {});
@@ -61,7 +62,7 @@ export class RouterStore implements RouterRepository {
   connections(): Connection[] { return structuredClone(this.state.connections); }
 
   publicState(): PublicState {
-    return { instance_id: this.state.instance_id, connections: this.connections(), network: structuredClone(this.state.network), clients: this.state.clients.map(({ token_hash: _hash, ...client }: Client): Omit<Client, 'token_hash'> => client) };
+    return { instance_id: this.state.instance_id, connections: this.connections(), network: structuredClone(this.state.network), startup_mode: this.state.startup_mode, clients: this.state.clients.map(({ token_hash: _hash, ...client }: Client): Omit<Client, 'token_hash'> => client) };
   }
 
   async removeConnection(id: string): Promise<void> {
@@ -82,6 +83,21 @@ export class RouterStore implements RouterRepository {
   }
 
   async saveNetwork(input: unknown): Promise<void> { const network: NetworkSettings = networkSchema.parse(input); await this.update((state: State): void => { state.network = network; }); }
+  async saveStartupMode(mode: StartupMode): Promise<void> {
+    await this.update((state: State): void => { state.startup_mode = mode; });
+  }
+
+  /** Re-encrypt legacy entries in one settings write before switching runtimes. */
+  async migrateSecrets(isLegacy: (value: Buffer) => boolean, from: SecretCipher): Promise<void> {
+    if (!Object.values(this.state.secrets).some((value: string): boolean => isLegacy(Buffer.from(value, 'base64')))) return;
+    await this.update((state: State): void => {
+      for (const [id, encoded] of Object.entries(state.secrets)) {
+        const value: Buffer = Buffer.from(encoded, 'base64');
+        if (isLegacy(value)) state.secrets[id] = this.cipher.encrypt(from.decrypt(value)).toString('base64');
+      }
+    });
+  }
+
   secret(id: string): string | undefined { const value: string | undefined = this.state.secrets[id]; return value ? this.cipher.decrypt(Buffer.from(value, 'base64')) : undefined; }
 
   private async update(change: (state: State) => void): Promise<void> {

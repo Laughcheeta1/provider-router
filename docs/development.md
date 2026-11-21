@@ -1,67 +1,91 @@
 # Development and verification
 
-Use Node 24 or later and pnpm. This repository is independently installable and has its own workspace and lockfile.
+Use Rust 1.92 or newer. The project includes a Cargo lockfile and builds one executable. Its local verification uses isolated profiles and a loopback listener.
 
 ```sh
-pnpm install --ignore-scripts
-pnpm run typecheck
-pnpm test
-pnpm run build
-pnpm start
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked --release
+cargo run --locked
 ```
 
-Dependency lifecycle scripts are disabled by default. The explicit `setup:runtime` command provisions the pinned Electron runtime through Electron's installer; `start` and `dev` run it before launch. Package security settings stay enabled. Codex installation and updates remain separate and user-managed.
+The CI matrix builds and tests on Linux, macOS, and Windows on x64 and ARM64. On Linux, the terminal dashboard can be exercised in WSL and the startup service on an active systemd user manager.
 
-```sh
-pnpm run dist:win
-pnpm run dist:mac
-```
+## Build manual installers
 
-Windows packages target x64 and ARM64 NSIS installers. macOS packages target Intel and Apple Silicon DMG and ZIP artifacts. Build macOS packages on macOS. Linux distributions are excluded. Packages are unsigned. GitHub release metadata powers the installed Windows application's explicit download and restart controls. On macOS, the app opens the release downloads for manual installation. A development source checkout does not check for updates.
+Run the **Provider Router CI** workflow manually to build the six installer candidates and download them from the run's artifacts. For a versioned release, run it from the `v<version>` tag matching `Cargo.toml`. Extract the installer from each artifact ZIP before attaching it to the matching GitHub Release. Release assets use the `provider-router-<platform>-<arch>.<extension>` names listed in [Getting started](getting-started.md).
 
-## Verify document attachments
+Installer payloads use the `manual-installers` Cargo feature. Build a local release payload with `cargo build --locked --release --features manual-installers`, then run the packaging command on its target platform.
 
-`pnpm test tests/documents.test.ts` checks extraction from a PDF with a rotated scanned page, DOCX text and embedded images, XLSX cell coordinates, cached values and formulas, and CSV quoting. It also checks the attachment limits and support for image inputs. The SDK tests cover inline attachments on Chat Completions and Responses and verify the extracted messages sent to simulated upstream providers.
-
-To include public documents, set `PROVIDER_ROUTER_PUBLIC_FIXTURES` to a directory with the following files and run `PROVIDER_ROUTER_PUBLIC_FIXTURES=/path/to/fixtures pnpm test tests/documents.test.ts`. Page numbers are one-based positions in the original PDF.
-
-| Fixture | Source and pages |
+| System | Packaging command |
 | --- | --- |
-| `isa-excerpt.pdf` | [ISA integrated report 2024](https://isa.co/wp-content/uploads/2026/02/reporte-integrado-isa-2024.pdf), pages 1, 4, 6 and 8 |
-| `xm.pdf` | [XM's RIO guide for entering DDV offers](https://www.xm.com.co/sites/default/files/documents/Instructivo%20RIO-Ingreso%20de%20oferta%20DDV.pdf), all 14 pages |
-| `epm-excerpt.pdf` | [EPM consolidated financial statements for 2025](https://www.epm.com.co/content/dam/epm/inversionistas/estados-financieros/estados-financieros-grupoepm/2025/Grupo_EPM_EEFF_Consolidados_certificaci%C3%B3n_informe_del_auditor_y_Notas_al_31-12-2025.pdf), pages 2, 3, 8 and 21 |
-| `ecopetrol-excerpt.pdf` | [Ecopetrol third-quarter 2026 report](https://files.ecopetrol.com.co/web/esp/inversionista/reporte-3t2026/reporte-3t-2026.pdf), pages 2, 3, 8 and 13 |
-| `xm-payment-template.xlsx` | [XM's payment deferral request form](https://www.xm.com.co/sites/default/files/inline-files/Solicitud%20aplicaci%C3%B3n%20Art%C3%ADculo%206%C2%B0%20de%20la%20Resoluci%C3%B3n%20CREG%20101%20029%20de%202022.xlsx), one sheet |
+| Windows | `pwsh -File installers/windows/build.ps1 -Binary target/release/provider-router.exe -Output release/provider-router-windows-x86_64.exe` |
+| macOS | `bash installers/unix/build-macos.sh target/release/provider-router release/provider-router-macos-aarch64.pkg` |
+| Linux | `bash installers/unix/build-linux.sh target/release/provider-router release/provider-router-linux-x86_64.sh` |
 
-In the Attalid monorepo, `backends/antikythera-back/tests/integration/test_provider_router_attachments.py` exercises the Chat upload route, the agent model pipeline, both Router adapters with simulated upstream responses, and rejection of oversized files before chat admission.
+Use the output filename for the architecture of the payload you built. The Windows command uses Inno Setup. CI artifacts are available for testing. Sign the Windows executable and installer, and sign and notarize the macOS package before publishing user downloads.
 
-For live verification, connect a development Antikythera session to an exposed vision-capable model, attach synthetic or public files, and ask for a fact found only in each file. For example, ask for the identifier on the rotated scanned page of `attachment-layout.pdf` and the value at `Dispatch!D4` in `attachment-workbook.xlsx`. The expected answers are `SCAN-ONLY-583` and `250`. Stop the rehearsal process and remove its temporary settings when finished.
+For Windows release builds, sign the executable before packaging and pass the Inno Setup signing command through `-SignCommand`. For macOS release builds, set `MACOS_APPLICATION_SIGNING_IDENTITY`, `MACOS_INSTALLER_SIGNING_IDENTITY`, and `MACOS_NOTARY_PROFILE` to the identities and notarization profile configured on the build machine.
 
-## Publish a release
-
-GitHub Actions runs type checks, tests, and a build on pull requests targeting `main` and pushes to `main`. To build downloadable Windows and macOS installers for testing without publishing a release, run **Provider Router CI and release** manually from the Actions tab and download the run's artifacts.
-
-To ship a stable version, update `version` in `package.json`, merge the change, and tag the exact commit you want to ship. For example, if that commit sets the version to `0.1.1`:
+## Use an isolated profile
 
 ```sh
-git tag -a v0.1.1 -m "Provider Router 0.1.1"
-git push origin v0.1.1
+profile="$(mktemp -d)"
+cargo run --locked -- --data-dir "$profile" network set --port 47841
+cargo run --locked -- --data-dir "$profile" serve
 ```
 
-A pushed tag must match the stable version in `package.json`. After the checks and both platform builds pass, the workflow publishes a GitHub Release with the Windows installers, `latest.yml`, matching `.exe.blockmap` files, and macOS DMG and ZIP files. The Windows updater uses the manifest to locate and verify the installer and uses the block maps for differential downloads when available.
+In another terminal, run `provider-router --data-dir DIRECTORY status` with the same directory. To shut down, run `provider-router --data-dir DIRECTORY stop` or press Ctrl+C in the foreground process. Remove the temporary profile once it has stopped.
 
-`pnpm run build` produces `dist/main.cjs`, the isolated `dist/preload.cjs`, the settings renderer, and a headless rehearsal service. Production settings use Electron's operating-system-backed `safeStorage`; saving provider secrets fails when encryption is unavailable. Client keys are hashed, provider keys are encrypted, and discovery contains no secrets. Existing Codex credentials stay in Codex's own configured store.
+## Verify providers and attachments
 
-For a disposable WSL/Linux development rehearsal of the API with the existing Codex CLI login:
+The automated tests use synthetic inputs and synthetic provider responses. The API tests exercise standard Chat Completions and Responses, request validation, local authentication, browser origins, documents, and streaming response formats. For an authorized live Codex run, use a dedicated Router profile, an existing Codex CLI login, one exposed model from the catalog, and a synthetic prompt.
 
-```sh
-PROVIDER_ROUTER_DATA_DIR=/tmp/provider-router-rehearsal PROVIDER_ROUTER_PORT=47841 node dist/smoke-server.cjs
+The fixture folder contains a PDF with a rotated scanned page, a workbook with cell addresses and formulas, and a Word document with embedded images. The expected scan identifier is `SCAN-ONLY-583` and the expected value at `Dispatch!D4` is `250`. These fixtures can also be used for an authorized live vision smoke test. To validate extraction without calling a provider, send the intended request to `POST /v1/attachment-checks`.
+
+For local startup verification on Linux, use an isolated profile and the generated systemd user unit. Verify start, stop, and cleanup. Starting at system boot before the account signs in also requires user lingering.
+
+## Build and verify automatic updates for feed-enabled builds
+
+Set `PROVIDER_ROUTER_UPDATE_FEED` and `PROVIDER_ROUTER_UPDATE_PUBLIC_KEY` when building the executable for both installers and subsequent releases. The feed is the HTTPS URL of the signed manifest for that OS and architecture. The key is a 32-byte Ed25519 public key encoded as 64 hex characters. Keep the private signing key separate from the build and hosting infrastructure. A local test profile can point to a loopback HTTP feed through `updates.toml` in its data directory.
+
+```toml
+feed = "http://127.0.0.1:47905/linux-x86_64/manifest.json"
+public_key = "<64 hex characters>"
 ```
 
-The required absolute data directory receives an isolated settings file and `ready.json` with a temporary client key, connection ID and endpoint. Keep it private and remove it after stopping the process. The rehearsal service rejects provider-secret persistence; it references the existing Codex home and never copies its credential contents. The rehearsal uses the direct subscription HTTP adapter. `SIGTERM` and `SIGINT` cancel active inference and stop the server. The ordinary Electron application also accepts `PROVIDER_ROUTER_DATA_DIR` only in unpackaged development for isolated UI rehearsals.
+Build the executable with the release version in `Cargo.toml`. Publish that native executable beside its manifest. The signed payload is a UTF-8 JSON document with these fields.
 
-The deterministic test suite runs the real HTTP server and the official OpenAI SDK against synthetic providers. It covers authentication and revocation, cross-client cancellation ownership, caller disconnection, schema/tool validation, provider wire mappings, credential rotation and guarded storage, process isolation, model discovery, standard Chat Completions/Responses and SSE framing. It does not spend real provider tokens. An authorized live Codex test should use synthetic data and the explicitly selected model; native Windows and macOS installer/runtime checks must be reported separately. A Windows installation can select a native Codex login or a Codex CLI installed in a chosen WSL distribution; this is a Windows feature, not a Linux distribution target.
+```json
+{
+  "format": 1,
+  "expires": "2026-12-01T00:00:00Z",
+  "version": "0.1.1",
+  "os": "linux",
+  "arch": "x86_64",
+  "artifact": "provider-router-0.1.1",
+  "size": 20000000,
+  "sha256": "<lowercase SHA-256 of the executable>"
+}
+```
 
-Codex inference calls the subscription Responses endpoint directly, with native function calls, structured output schemas and caller-supplied history. It does not launch Codex CLI, load coding-agent instructions or wrap answers in a CLI decision envelope. Discovery can still probe Codex installation and login status. Existing CLI connections are persisted as direct connections on upgrade with their identities and selections preserved.
+Sign the exact payload bytes with Ed25519, for example with `openssl pkeyutl -sign -rawin -inkey release-key.pem -in payload.json -out signature.bin`. Encode the payload and raw signature separately as standard base64 for the manifest envelope. Upload the executable before publishing the manifest. Each platform uses the Rust `std::env::consts` OS and architecture names, such as `windows` and `aarch64`.
 
-Direct OAuth refresh is internal credential maintenance. Provider Router serializes its own refreshes, reloads before exchanging credentials, preserves account/login identity and persisted OAuth authority, commits through Codex's stable OS lock sidecar and compares the original credential generation. It does not hold the commit lock through network exchange or claim to serialize every refresh by another process. An uncertain rotation is marked by a generation hash and stops automatic replay until the Codex login changes. File and direct native-keyring storage are supported; Codex's separate encrypted `secrets` backend and WSL keyring stores are unsupported. WSL file credentials are accessed in place and refresh commits acquire Linux flock in the owning distribution.
+```json
+{
+  "signed": "<base64 of payload.json>",
+  "signature": "<base64 of signature.bin>"
+}
+```
+
+The service checks at startup and every 15 minutes. It verifies metadata and executable contents, starts a private API worker, and switches at the HTTP request boundary. It then starts the replacement supervisor and passes it the existing listener. The account startup entry points to the stable installed executable, which starts the service and dispatches new dashboard and CLI invocations to the active release. Use `provider-router status` to inspect the running worker and supervisor versions.
+
+For a live update smoke test, start with an isolated profile, hold an API request open, publish a signed newer release, and verify the same API port serves that version while the old request completes. A corrupted artifact or a candidate that fails readiness should leave a working worker available. Rollback retains the highest accepted release number, so publish a higher version for its replacement.
+
+## Native architecture
+
+- [Core library](../native/lib.rs) compiles the [domain rules](../native/domain/mod.rs) and [application use cases](../native/application/mod.rs) separately from the executable. Use cases define the contracts for persistence, provider inference, and document preparation.
+- [Presentation](../native/presentation/mod.rs) owns the CLI, terminal screens, and local HTTP protocol translation. It calls shared settings and inference workflows through typed interfaces.
+- [Infrastructure](../native/infrastructure/mod.rs) implements profile storage, platform startup, provider clients, document processing, and supervision. The supervisor keeps socket transfer, the control channel, and signed release verification in focused modules.
+- [The executable entry point](../native/main.rs) supplies the concrete adapters and dispatches the private worker processes.

@@ -1,0 +1,224 @@
+//! Router settings, identifiers, and rules shared across entry points.
+// RevExt: 149
+use std::path::PathBuf;
+// RevExt: 150
+use anyhow::{Context, Result, bail, ensure};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+// RevExt: 151
+// RevExt: 3
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct State {
+    pub instance_id: Uuid,
+    pub connections: Vec<Connection>,
+    pub clients: Vec<Client>,
+    pub network: Network,
+    pub startup_mode: StartupMode,
+}  // RevExt: 156
+// RevExt: 4
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            instance_id: Uuid::now_v7(),
+            connections: Vec::new(),
+            clients: Vec::new(),
+            network: Network::default(),
+            startup_mode: StartupMode::Startup,
+        }  // RevExt: 39
+    }  // RevExt: 53
+}  // RevExt: 157
+// RevExt: 5
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StartupMode {
+    Startup,
+    KeepAfterOpen,
+    WhileOpen,
+}  // RevExt: 158
+// RevExt: 7
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Network {
+    pub host: String,
+    pub port: u16,
+    pub require_api_key: bool,
+    pub browser_origins: Vec<String>,
+}  // RevExt: 159
+// RevExt: 8
+impl Default for Network {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".into(),
+            port: 47831,
+            require_api_key: false,
+            browser_origins: Vec::new(),
+        }  // RevExt: 41
+    }  // RevExt: 55
+}  // RevExt: 160
+// RevExt: 9
+impl Network {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(  // RevExt: 189
+  // RevExt: 171
+            matches!(self.host.as_str(), "127.0.0.1" | "::1" | "localhost"),
+            "Use a loopback host (127.0.0.1, ::1, or localhost)."
+        );  // RevExt: 176
+        ensure!(self.port > 0, "The port must be between 1 and 65535.");
+        ensure!(  // RevExt: 190
+  // RevExt: 172
+            self.browser_origins.len() <= 50,
+            "Approve up to 50 origins."
+        );  // RevExt: 177
+        for origin in &self.browser_origins {
+            let url = url::Url::parse(origin).context("Enter an exact website origin.")?;
+            let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+            ensure!(  // RevExt: 194
+  // RevExt: 181
+                url.origin().ascii_serialization() == *origin
+                    && (url.scheme() == "https" || url.scheme() == "http" && loopback),
+                "Use an exact HTTPS website origin or a local HTTP origin, without a trailing slash."
+            );  // RevExt: 184
+        }  // RevExt: 42
+        Ok(())  // RevExt: 77
+    }  // RevExt: 56
+// RevExt: 152
+// RevExt: 10
+    pub fn loopback_authority(&self) -> String {
+        let host = if self.host == "::1" {
+            "[::1]"
+        } else {
+            "127.0.0.1"
+        };  // RevExt: 148
+        format!("{host}:{}", self.port)
+    }  // RevExt: 37
+}  // RevExt: 161
+// RevExt: 153
+// RevExt: 10
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Method {
+    #[serde(rename = "codex_http")]
+    Codex,
+    #[serde(rename = "openrouter_http")]
+    Openrouter,
+}  // RevExt: 162
+// RevExt: 11
+impl Method {
+    pub fn provider(&self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Openrouter => "openrouter",
+        }  // RevExt: 43
+    }  // RevExt: 57
+}  // RevExt: 163
+// RevExt: 12
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Model {
+    pub id: String,
+    pub name: String,
+    pub reasoning_efforts: Vec<String>,
+    pub default_reasoning_effort: Option<String>,
+    pub context_window: u64,
+    pub max_output_tokens: u64,
+    pub tools: bool,
+    pub structured_output: bool,
+    pub input_modalities: Vec<String>,
+}  // RevExt: 164
+// RevExt: 13
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Connection {
+    pub id: Uuid,
+    pub name: String,
+    pub method: Method,
+    pub exposed: bool,
+    pub models: Vec<Model>,
+    pub codex_home: Option<PathBuf>,
+    pub executable: Option<PathBuf>,
+    pub wsl_distribution: Option<String>,
+}  // RevExt: 165
+// RevExt: 14
+impl Connection {
+    pub fn new(method: Method) -> Self {
+        Self {
+            id: Uuid::now_v7(),
+            name: if method == Method::Codex {
+                "Codex"
+            } else {
+                "OpenRouter"
+            }
+            .into(),
+            method,
+            exposed: false,
+            models: Vec::new(),
+            codex_home: None,
+            executable: None,
+            wsl_distribution: None,
+        }  // RevExt: 44
+    }  // RevExt: 58
+// RevExt: 154
+    pub fn normalize(&mut self, wsl_supported: bool) -> Result<()> {
+        ensure!(  // RevExt: 191
+  // RevExt: 173
+            self.id.get_version_num() == 7,
+            "Provider IDs must be UUIDv7."
+        );  // RevExt: 178
+        self.name = validated_name(&self.name)?;
+        ensure!(  // RevExt: 192
+  // RevExt: 174
+            self.wsl_distribution.is_none() || (wsl_supported && self.method == Method::Codex),
+            "WSL connections require Codex on Windows."
+        );  // RevExt: 179
+        if let Some(distribution) = &self.wsl_distribution {
+            ensure!(  // RevExt: 195
+  // RevExt: 182
+                !distribution.is_empty()
+                    && distribution.len() <= 128
+                    && !distribution.contains(['\r', '\n', '\0']),
+                "Choose a valid WSL distribution."
+            );  // RevExt: 185
+        }  // RevExt: 49
+        self.models
+            .retain(|model| self.method != Method::Codex || model.id != "gpt-reserve");
+        for model in &self.models {
+            ensure!(  // RevExt: 196
+  // RevExt: 183
+                !model.id.is_empty()
+                    && !model.name.is_empty()
+                    && model.context_window > 0
+                    && model.max_output_tokens > 0
+                    && model
+                        .default_reasoning_effort
+                        .as_ref()
+                        .is_none_or(|effort| model.reasoning_efforts.contains(effort)),
+                "A selected model has invalid capabilities."
+            );  // RevExt: 186
+        }  // RevExt: 50
+        Ok(())  // RevExt: 187
+    }  // RevExt: 169
+// RevExt: 155
+    pub fn validate_key(&self, key: &str) -> Result<()> {
+        ensure!(  // RevExt: 193
+  // RevExt: 175
+            self.method == Method::Openrouter
+                && !key.trim().is_empty()
+                && key.len() <= 1024
+                && !key.contains(['\r', '\n', '\0']),
+            "Enter a valid OpenRouter API key."
+        );  // RevExt: 180
+        Ok(())  // RevExt: 188
+    }  // RevExt: 170
+}  // RevExt: 166
+// RevExt: 15
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Client {
+    pub id: Uuid,
+    pub name: String,
+    pub created_at: String,
+    pub token_hash: String,
+}  // RevExt: 167
+// RevExt: 38
+pub fn validated_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 || name.chars().any(char::is_control) {
+        bail!("Enter a name between 1 and 100 characters.");
+    }  // RevExt: 76
+    Ok(name.into())
+}  // RevExt: 168

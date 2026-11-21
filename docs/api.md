@@ -2,7 +2,7 @@
 
 The public inference API implements a documented subset of the OpenAI API. Set an OpenAI SDK's `baseURL` to `http://127.0.0.1:47831/v1` and its `apiKey` to the client key when authentication is enabled. New installations do not require keys; SDKs that require a nonempty key can use `local` as a placeholder while key requirements are disabled. Native application accounts and provider credentials are not API inputs. The API is available only through a loopback address on this computer.
 
-Local access defaults to no authentication. When **Require client API keys** is enabled, every endpoint except `/health` requires `Authorization: Bearer CLIENT_KEY`. Existing settings without the new authentication field retain required keys on upgrade. Browser access is disabled by default. In API access, approve each exact HTTPS website origin (for example `https://app.example`) under Approved website origins; loopback HTTP origins are supported for development. Origins cannot contain paths, trailing slashes or wildcards. Approved origins receive CORS headers on successes and errors, and OPTIONS accepts GET/POST with authorization, content-type and x-request-id headers. Requests from other origins are rejected before authentication or inference. Local Host headers remain checked against the listener to prevent DNS rebinding. Browser access does not expose settings, provider credentials or account-management operations.
+Local access defaults to no authentication. When **Require client API keys** is enabled, every endpoint except `/health` requires `Authorization: Bearer CLIENT_KEY`. Browser access is disabled by default. In API access, approve each exact HTTPS website origin (for example `https://app.example`) under Approved website origins; loopback HTTP origins are supported for development. Origins cannot contain paths, trailing slashes or wildcards. Approved origins receive CORS headers on successes and errors, and OPTIONS accepts GET/POST with authorization, content-type and x-request-id headers. Requests from other origins are rejected before authentication or inference. Local Host headers remain checked against the listener to prevent DNS rebinding. Browser access does not expose settings, provider credentials or account-management operations.
 
 ## GET /health
 
@@ -91,9 +91,9 @@ Send a Chat Completions request body with the intended model and attachments to 
 
 ## Attachment formats and limits
 
-Send a filename and a base64 data URL with the media type for its extension. Supported extensions are `.pdf`, `.docx`, `.txt`, `.md`, `.markdown`, `.csv` and `.xlsx`. Remote URLs and uploaded file IDs are unsupported. Router extracts attachments locally for both Codex and OpenRouter. It gives the model one user message per file, with the filename, extracted text and any images, immediately before the user message that included the files. Only the extracted content goes to the selected provider.
+Send a filename and a base64 data URL with the media type for its extension. Supported extensions are `.pdf`, `.docx`, `.txt`, `.md`, `.markdown`, `.csv` and `.xlsx`. Remote URLs and uploaded file IDs are unsupported. Router processes attachments locally for both Codex and OpenRouter. It gives the model one user message per file, immediately before the user message that included the files. For formats other than PDF, the attachment message includes the filename alongside the extracted content.
 
-- PDFs supply available page text and a JPEG rendering of each page. The images let a vision model read scanned text and see tables, charts and page layout.
+- PDFs supply only a JPEG image of each page, in page order. The images let a vision model read the page and see tables, charts and layout.
 - DOCX supplies text, tables and supported embedded images. Text and Markdown supply their original UTF-8 text.
 - XLSX supplies a grid for each sheet with spreadsheet column letters and row numbers. Cells use stored values where available, and formulas are included separately without recalculation. CSV supplies one grid with the same coordinates and preserves quoted fields.
 
@@ -111,7 +111,7 @@ PDFs and documents with extracted images require a model that advertises image i
 
 This extension returns `{"protocol_version":1,"providers":[...]}`. Each provider entry contains `id`, `name`, `provider`, `method` and `models`. A model includes `id`, `name`, `reasoning_efforts`, `default_reasoning_effort`, `context_window`, `max_output_tokens`, `tools`, `structured_output` and `input_modalities`. The model's ID in this extension is its upstream ID; `/v1/models` publishes the qualified SDK ID.
 
-OpenRouter reasoning choices come from the published model catalog. Codex choices come from the authenticated subscription catalog. Codex inference uses direct subscription HTTP (`codex_http`); legacy CLI connections retain their identities and migrate automatically. The `image` modality indicates support for images extracted from attachments. If a catalog omits a maximum output size, Router applies a conservative local cap of one fifth of the context size; this is a Router policy cap, not a claim about the provider's native limit. Codex output budgets are checked after completion because these transports do not expose a supported hard output cap; a budget does not cap upstream billing or subscription usage.
+OpenRouter reasoning choices come from the published model catalog. Codex choices come from the authenticated subscription catalog. Codex inference uses direct subscription HTTP (`codex_http`). The `image` modality indicates support for images extracted from attachments. If a catalog omits a maximum output size, Router applies a conservative local cap of one fifth of the context size; this is a Router policy cap, not a claim about the provider's native limit. Codex output budgets are checked after completion because these transports do not expose a supported hard output cap; a budget does not cap upstream billing or subscription usage.
 
 ## Request cancellation and errors
 
@@ -119,4 +119,4 @@ Disconnecting or aborting an inference HTTP request cancels its local provider o
 
 Errors use `{"error":{"message":"Safe explanation","type":"invalid_request_error","param":null,"code":"STABLE_CODE"}}`. Authentication, rate-limit, unsupported capability, invalid output, cancellation and provider failures have stable codes. Upstream raw errors and request contents are never reflected. JSON Schema and tool arguments are validated before success is returned.
 
-The versioned extension `POST /v1/inference` accepts an explicit UUIDv7 request and connection ID and returns the normalized completion contract. It is retained for protocol integrations; ordinary applications should use the standard OpenAI endpoints above.
+The versioned extension `POST /v1/inference` accepts an explicit UUIDv7 request and connection ID and returns the normalized completion contract. The standard OpenAI endpoints above work with ordinary SDK clients.

@@ -4,3 +4,5 @@ release/
 coverage/
 *.log
 .env
+
+/target/

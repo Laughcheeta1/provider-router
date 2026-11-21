@@ -1,6 +1,16 @@
-.PHONY: dev
+.PHONY: dev build test check
 
-PNPM ?= pnpm
+CARGO ?= cargo
 
 dev:
-	$(PNPM) run dev
+	$(CARGO) run --locked --
+
+build:
+	$(CARGO) build --locked --release
+
+test:
+	$(CARGO) test --locked
+
+check:
+	$(CARGO) fmt --all -- --check
+	$(CARGO) clippy --locked --all-targets -- -D warnings
