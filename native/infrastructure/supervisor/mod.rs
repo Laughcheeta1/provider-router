@@ -34,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 // RevExt: 3
 use super::{
     installation::{VERSION, installation_executable},
+    network::{DockerPeers, container_bridge_address},
     profile::{Profile, private_file, random_token, write_private},
 };  // RevExt: 214
 use crate::domain::{Network, StartupMode};
@@ -45,13 +46,105 @@ use updates::Updates;
 use worker::Proxy;  // RevExt: 183
 // RevExt: 10
 struct Api {
+    loopback: ApiListener,
+    bridge: Option<ApiListener>,
+}  // RevExt: 242
+// RevExt: 234
+impl Api {
+    async fn drain(self) {  // RevExt: 246
+        let bridge = async {  // RevExt: 248
+            if let Some(bridge) = self.bridge {  // RevExt: 250
+                bridge.drain().await;
+            }  // RevExt: 252
+        };  // RevExt: 256
+        tokio::join!(self.loopback.drain(), bridge);
+    }  // RevExt: 260
+// RevExt: 235
+    async fn stop(self) {
+        let bridge = async {  // RevExt: 249
+            if let Some(bridge) = self.bridge {  // RevExt: 251
+                bridge.stop().await;
+            }  // RevExt: 253
+        };  // RevExt: 257
+        tokio::join!(self.loopback.stop(), bridge);
+    }  // RevExt: 261
+// RevExt: 236
+    async fn refresh_bridge(
+        &mut self,
+        network: &Network,
+        control: &Control,
+        proxy: &Proxy,
+        inherited: Option<std::net::TcpListener>,
+    ) {
+        let mut desired = container_bridge_address(network);
+        let active = self.bridge.as_ref().map(|bridge| bridge.address);
+        if desired.as_ref().is_ok_and(|address| *address == active) && active.is_some() {
+            return;
+        }  // RevExt: 268
+        if let Some(bridge) = self.bridge.take() {
+            bridge.stop().await;
+            desired = container_bridge_address(network);
+        }  // RevExt: 269
+        let result = desired.and_then(|desired| {
+            desired
+                .map(|address| {
+                    let listener = match inherited {
+                        Some(listener) => listener,
+                        None => std::net::TcpListener::bind(address)
+                            .with_context(|| format!("Could not bind to {address}."))?,
+                    };
+                    ApiListener::serve(listener, proxy, true)
+                })
+                .transpose()
+        });  // RevExt: 274
+        let error = match result {
+            Ok(bridge) => {
+                self.bridge = bridge;
+                None
+            }  // RevExt: 254
+            Err(error) => Some(format!("Docker bridge listener unavailable: {error:#}")),
+        };  // RevExt: 258
+        let mut status = control.status.write().await;
+        status.container_bridge_endpoint = self.bridge.as_ref().map(|bridge| bridge.endpoint());
+        if status.error != error {
+            if let Some(error) = &error {
+                eprintln!("{error}");
+            }  // RevExt: 255
+            status.error = error;
+        }  // RevExt: 270
+    }  // RevExt: 262
+}  // RevExt: 243
+// RevExt: 237
+struct ApiListener {
+    address: SocketAddr,
     listener: std::net::TcpListener,
     shutdown: CancellationToken,
     task: JoinHandle<io::Result<()>>,
 }  // RevExt: 41
 // RevExt: 11
-impl Api {
-    async fn drain(self) {
+impl ApiListener {
+    fn serve(listener: std::net::TcpListener, proxy: &Proxy, docker_peers_only: bool) -> Result<Self> {
+        listener.set_nonblocking(true)?;
+        let serving = TcpListener::from_std(listener.try_clone()?)?;
+        let address = listener.local_addr()?;
+        let shutdown = CancellationToken::new();
+        let routes = proxy.routes();
+        let signal = shutdown.clone();
+        let task = tokio::spawn(serve_listener(serving, routes, signal, docker_peers_only));  // RevExt: 275
+// RevExt: 276
+        Ok(Self {
+            address,
+            listener,
+            shutdown,
+            task,
+        })
+    }  // RevExt: 263
+// RevExt: 238
+    fn endpoint(&self) -> String {
+        format!("http://{}", self.address)
+    }  // RevExt: 264
+// RevExt: 239
+    async fn drain(self) {  // RevExt: 247
         self.shutdown.cancel();  // RevExt: 96
         drop(self.listener);
         let _ = self.task.await;
@@ -73,8 +166,8 @@ impl Api {
 // RevExt: 13
 pub async fn start_background(profile: &Profile) -> Result<()> {
     start_background_at(profile, &installation_executable()?).await
-}
-
+}  // RevExt: 244
+// RevExt: 240
 pub async fn start_background_at(profile: &Profile, executable: &Path) -> Result<()> {
     if control_request(profile, "status", false).await?.is_some() {
         return Ok(());  // RevExt: 216
@@ -120,26 +213,26 @@ pub async fn start_background_at(profile: &Profile, executable: &Path) -> Result
     }  // RevExt: 71
     bail!("Provider Router could not open its local control channel.")
 }  // RevExt: 43
-
+// RevExt: 241
 /// Prevent a second supervisor from starting while the installer replaces its executable.
 pub async fn pause_for_installation(profile: &Profile) -> Result<(File, bool)> {
     if let Some(lock) = daemon_lock(profile)? {
         return Ok((lock, false));
-    }
+    }  // RevExt: 265
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut stopped = false;
     while Instant::now() < deadline {
         if let Some(lock) = daemon_lock(profile)? {
             return Ok((lock, true));
-        }
+        }  // RevExt: 271
         if !stopped && control_request(profile, "status", false).await?.is_some() {
             stop(profile).await?;
             stopped = true;
-        }
+        }  // RevExt: 272
         time::sleep(Duration::from_millis(70)).await;
-    }
+    }  // RevExt: 266
     bail!("Provider Router did not release its runtime lock for the installer.")
-}
+}  // RevExt: 245
 // RevExt: 17
 pub async fn serve(profile: Profile, mode: ServeMode) -> Result<()> {
     let Some(_lock) = daemon_lock(&profile)? else {
@@ -165,7 +258,7 @@ pub async fn serve(profile: Profile, mode: ServeMode) -> Result<()> {
         let Some(replacement) = serve_generation(&profile, mode, None, rejected.as_deref()).await?
         else {
             return Ok(());  // RevExt: 114
-        };
+        };  // RevExt: 259
         if !monitor_replacement(&profile, replacement.child).await? {
             return Ok(());  // RevExt: 115
         }  // RevExt: 102
@@ -211,12 +304,20 @@ async fn serve_generation(
             .map(|incoming| incoming.installation.clone()),
     )?;
     let proxy = Proxy::new(updates.start().await?);
+    let mut inherited_bridge = None;
     let listener = if let Some(mut incoming) = incoming {
         ensure!(  // RevExt: 230
   // RevExt: 199
             incoming.listener.local_addr()? == configured_address(&network)?,
             "The configured address changed during the handoff."
         );  // RevExt: 201
+        if let Some(bridge) = incoming.bridge.take() {
+            ensure!(
+                Some(bridge.local_addr()?) == network.container_bridge_address()?,
+                "The configured Docker bridge address changed during the handoff."
+            );
+            inherited_bridge = Some(bridge);
+        }  // RevExt: 273
         proxy.predecessor(incoming.predecessor, &incoming.predecessor_token)?;
         handoff::ready(&mut incoming.pipe).await?;
         Some(incoming.listener)
@@ -248,6 +349,11 @@ async fn serve_generation(
         let error = control.status.read().await.error.clone();
         bail!("{}", error.as_deref().unwrap_or("The API could not start."));
     }  // RevExt: 78
+    if let Some(api) = &mut api
+        && network.container_bridge_host.is_some()
+    {  // RevExt: 278
+        api.refresh_bridge(&network, &control, &proxy, inherited_bridge).await;
+    }  // RevExt: 267
     let control_path = profile.dir.join(CONTROL_FILE);
     if let Err(error) = write_private(&control_path, &serde_json::to_vec(&descriptor)?) {
         if let Some(api) = api.take() {
@@ -278,9 +384,9 @@ async fn serve_generation(
                 .with_state(control);
             axum::serve(control_listener, routes)
                 .with_graceful_shutdown(control_shutdown.cancelled_owned())
-                .await
+                .await  // RevExt: 277
         }  // RevExt: 104
-    });
+    });  // RevExt: 279
     if resumed {
         handoff::signal("active").await?;
     }  // RevExt: 81
@@ -306,6 +412,8 @@ async fn serve_generation(
                 {  // RevExt: 139
                     break;
                 }  // RevExt: 141
+                let refresh_bridge = network.container_bridge_host.is_some()
+                    || settings.network.container_bridge_host.is_some();
                 if network != settings.network {
                     let rebind = configured_address(&network)? != configured_address(&settings.network)?;
                     network = settings.network;
@@ -314,13 +422,16 @@ async fn serve_generation(
                         api = replace_api(profile, &network, &control, &proxy, None).await;
                     }  // RevExt: 146
                 }  // RevExt: 142
+                if let Some(api) = &mut api && refresh_bridge {
+                    api.refresh_bridge(&network, &control, &proxy, None).await;
+                }  // RevExt: 281
                 let worker = proxy.active();
                 if worker.version != VERSION
                     && attempted.as_deref() != Some(worker.version.as_str())
                     && let Some(bound) = &api
                 {  // RevExt: 140
                     attempted = Some(worker.version.clone());
-                    match handoff::replace(profile, mode, &worker, &bound.listener, &control_socket, &descriptor.token, &installation).await {
+                    match handoff::replace(profile, mode, &worker, bound, &control_socket, &descriptor.token, &installation).await {
                         Ok(successor) => {
                             replacement = Some((successor, worker.version.clone()));
                             break;
@@ -331,7 +442,7 @@ async fn serve_generation(
                                 eprintln!("Provider Router could not restore the previous API worker: {rollback:#}");
                             }
                             write_private(&control_path, &serde_json::to_vec(&descriptor)?)?;
-                            write_discovery(profile, bound.listener.local_addr()?)?;
+                            write_discovery(profile, bound.loopback.address)?;
                         }  // RevExt: 150
                     }  // RevExt: 147
                 }  // RevExt: 143
@@ -452,27 +563,30 @@ fn bind_api(
         None => std::net::TcpListener::bind(configured_address(network)?)
             .context("The API could not bind to its loopback address and port.")?,
     };  // RevExt: 120
-    listener.set_nonblocking(true)?;
-    let serving = TcpListener::from_std(listener.try_clone()?)?;
     let address = listener.local_addr()?;
     write_discovery(profile, address)?;
-    let shutdown = CancellationToken::new();
-    let routes = proxy.routes();
-    let signal = shutdown.clone();
-    let task = tokio::spawn(async move {
-        axum::serve(serving, routes)
-            .with_graceful_shutdown(signal.cancelled_owned())
-            .await  // RevExt: 186
-    });
-    Ok((
-        format!("http://{address}"),
-        Api {
-            listener,
-            shutdown,
-            task,
-        },
-    ))
+    let loopback = ApiListener::serve(listener, proxy, false)?;
+    let endpoint = loopback.endpoint();
+    Ok((endpoint, Api { loopback, bridge: None }))
 }  // RevExt: 53
+// RevExt: 282
+async fn serve_listener(
+    serving: TcpListener,
+    routes: Router,
+    signal: CancellationToken,
+    docker_peers_only: bool,
+) -> io::Result<()> {
+    if docker_peers_only {  // RevExt: 285
+        // The keyless bridge listener must not answer hosts that only route to the bridge address.
+        return axum::serve(DockerPeers(serving), routes)
+            .with_graceful_shutdown(signal.cancelled_owned())
+            .await;
+    }  // RevExt: 286
+    axum::serve(serving, routes)
+        .with_graceful_shutdown(signal.cancelled_owned())
+        .await  // RevExt: 186
+    // RevExt: 284
+}  // RevExt: 283
 // RevExt: 24
 fn write_discovery(profile: &Profile, address: SocketAddr) -> Result<()> {
     let descriptor = serde_json::json!({
@@ -481,7 +595,7 @@ fn write_discovery(profile: &Profile, address: SocketAddr) -> Result<()> {
         "instance_id": profile.read()?.instance_id,
         "pid": std::process::id(),
         "version": env!("CARGO_PKG_VERSION"),
-    });
+    });  // RevExt: 280
     write_private(
         &profile.dir.join("discovery.json"),
         &serde_json::to_vec(&descriptor)?,

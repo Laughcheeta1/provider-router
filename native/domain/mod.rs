@@ -1,6 +1,9 @@
 //! Router settings, identifiers, and rules shared across entry points.
 // RevExt: 149
-use std::path::PathBuf;
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 // RevExt: 150
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -40,6 +43,8 @@ pub enum StartupMode {
 pub struct Network {
     pub host: String,
     pub port: u16,
+    #[serde(default)]
+    pub container_bridge_host: Option<IpAddr>,
     pub require_api_key: bool,
     pub browser_origins: Vec<String>,
 }  // RevExt: 159
@@ -49,6 +54,7 @@ impl Default for Network {
         Self {
             host: "127.0.0.1".into(),
             port: 47831,
+            container_bridge_host: None,
             require_api_key: false,
             browser_origins: Vec::new(),
         }  // RevExt: 41
@@ -90,6 +96,21 @@ impl Network {
         };  // RevExt: 148
         format!("{host}:{}", self.port)
     }  // RevExt: 37
+// RevExt: 197
+    pub fn container_bridge_address(&self) -> Result<Option<SocketAddr>> {
+        let Some(host) = self.container_bridge_host else {
+            return Ok(None);
+        };  // RevExt: 201
+        let private = match host {
+            IpAddr::V4(ip) => ip.is_private(),
+            IpAddr::V6(ip) => ip.is_unique_local(),
+        };  // RevExt: 202
+        ensure!(  // RevExt: 199
+            private,
+            "Container bridge host {host} must be an RFC 1918 IPv4 or unique-local IPv6 address."
+        );  // RevExt: 200
+        Ok(Some(SocketAddr::new(host, self.port)))
+    }  // RevExt: 198
 }  // RevExt: 161
 // RevExt: 153
 // RevExt: 10
@@ -222,3 +243,53 @@ pub fn validated_name(name: &str) -> Result<String> {
     }  // RevExt: 76
     Ok(name.into())
 }  // RevExt: 168
+// RevExt: 203
+#[cfg(test)]
+mod tests {
+    use super::*;
+// RevExt: 204
+    #[test]  // RevExt: 212
+    fn bridge_addresses_are_rfc_1918_or_unique_local() {
+        for host in ["10.0.0.1", "172.16.0.1", "192.168.0.1", "fc00::1", "fd00::1"] {
+            let network = Network {  // RevExt: 214
+                container_bridge_host: Some(host.parse().unwrap()),  // RevExt: 216
+                ..Network::default()  // RevExt: 218
+            };  // RevExt: 220
+            assert_eq!(
+                network.container_bridge_address().unwrap(),
+                network.container_bridge_host.map(|host| SocketAddr::new(host, network.port))
+            );  // RevExt: 211
+        }  // RevExt: 207
+        for host in [
+            "0.0.0.0", "::", "127.0.0.1", "::1", "169.254.1.1", "fe80::1", "172.32.0.1",
+            "8.8.8.8", "2001:4860::1", "::ffff:10.0.0.1",
+        ] {
+            let network = Network {  // RevExt: 215
+                container_bridge_host: Some(host.parse().unwrap()),  // RevExt: 217
+                ..Network::default()  // RevExt: 219
+            };  // RevExt: 221
+            assert!(network.container_bridge_address().is_err(), "{host}");
+        }  // RevExt: 208
+    }  // RevExt: 209
+// RevExt: 205
+    #[test]  // RevExt: 213
+    fn existing_network_settings_load_with_the_bridge_disabled() {
+        let old = serde_json::json!({
+            "host": "::1",
+            "port": 47841,
+            "require_api_key": true,
+            "browser_origins": ["https://example.com"]
+        });
+        let mut network: Network = serde_json::from_value(old).unwrap();
+        assert_eq!(network.host, "::1");
+        assert_eq!(network.port, 47841);
+        assert!(network.require_api_key);
+        assert_eq!(network.browser_origins, ["https://example.com"]);
+        assert!(network.container_bridge_host.is_none());
+        assert!(!Network::default().require_api_key);
+        network.container_bridge_host = Some("fd00::1".parse().unwrap());
+        let encoded = serde_json::to_value(&network).unwrap();
+        assert_eq!(encoded["container_bridge_host"], "fd00::1");
+        assert_eq!(serde_json::from_value::<Network>(encoded).unwrap(), network);
+    }  // RevExt: 210
+}  // RevExt: 206

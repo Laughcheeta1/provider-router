@@ -65,7 +65,7 @@ pub enum Command {
     InternalHandoff,
     #[command(name = "__install", hide = true)]
     InternalInstall {
-        #[arg(long)]
+        #[arg(long)]  // RevExt: 127
         destination: PathBuf,
     },
     #[command(name = "__uninstall", hide = true)]
@@ -83,7 +83,7 @@ pub enum ProviderCommand {
     Add {
         #[arg(value_parser = method_parser())]
         method: Method,
-        #[arg(long)]
+        #[arg(long)]  // RevExt: 128
         wsl: Option<String>,
         #[command(flatten)]
         fields: ProviderFields,
@@ -141,17 +141,24 @@ pub enum ClientCommand {
 pub enum NetworkCommand {
     Show,
     Set {
-        #[arg(long)]
+        /// Loopback host for applications on this computer.
+        #[arg(long)]  // RevExt: 129
         host: Option<String>,
-        #[arg(long)]
+        #[arg(long)]  // RevExt: 130
         port: Option<u16>,
+        /// Private IP assigned to the Linux host's Docker bridge.
+        #[arg(long, conflicts_with = "clear_container_bridge_host")]
+        container_bridge_host: Option<std::net::IpAddr>,
+        /// Disable access through the Docker bridge.
+        #[arg(long)]  // RevExt: 131
+        clear_container_bridge_host: bool,
         #[arg(long, conflicts_with = "no_require_key")]
         require_key: bool,
-        #[arg(long)]
+        #[arg(long)]  // RevExt: 132
         no_require_key: bool,
         #[arg(long = "origin", conflicts_with = "clear_origins")]
         origins: Vec<String>,
-        #[arg(long)]
+        #[arg(long)]  // RevExt: 133
         clear_origins: bool,
     },  // RevExt: 92
 }  // RevExt: 30
@@ -227,27 +234,29 @@ pub async fn execute(profile: Profile, command: Command) -> Result<()> {
             NetworkCommand::Set {
                 host,
                 port,
+                container_bridge_host,
+                clear_container_bridge_host,
                 require_key,
                 no_require_key,
                 origins,
                 clear_origins,
-            } => profile.update(|state| {
-                let network = &mut state.network;
+            } => json!(profile.update_network(container_bridge_host.is_some(), |network| {
                 if let Some(host) = host {
                     network.host = host;
-                }
+                }  // RevExt: 134
                 if let Some(port) = port {
                     network.port = port;
-                }
+                }  // RevExt: 135
+                if clear_container_bridge_host || container_bridge_host.is_some() {
+                    network.container_bridge_host = container_bridge_host;
+                }  // RevExt: 136
                 if require_key || no_require_key {
                     network.require_api_key = require_key;
-                }
+                }  // RevExt: 137
                 if clear_origins || !origins.is_empty() {
                     network.browser_origins = origins;
-                }
-                network.validate()?;
-                Ok(json!(network))
-            })?,
+                }  // RevExt: 138
+            })?),
         },
         Command::Settings {
             command: SettingsCommand::Apply,
@@ -409,6 +418,7 @@ async fn status(profile: &Profile) -> Result<Value> {
         "network": state.network,
         "startup_mode": state.startup_mode,
         "endpoint": runtime.endpoint,
+        "container_bridge_endpoint": runtime.container_bridge_endpoint,
         "error": runtime.error,
         "worker_version": runtime.worker_version,
         "supervisor_version": runtime.supervisor_version,

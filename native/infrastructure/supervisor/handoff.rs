@@ -12,7 +12,7 @@ use tokio::{
 // RevExt: 13
 use crate::infrastructure::{installation::VERSION, profile::Profile};
 // RevExt: 14
-use super::{socket_transfer, updates::Installation, worker::Worker};
+use super::{Api, socket_transfer, updates::Installation, worker::Worker};
 // RevExt: 15
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(30);
 // RevExt: 16
@@ -29,6 +29,8 @@ struct Transfer {
     protocol: u32,
     mode: ServeMode,
     public: socket_transfer::SocketOffer,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bridge: Option<socket_transfer::SocketOffer>,
     control: socket_transfer::SocketOffer,
     control_token: String,
     installation: Installation,
@@ -37,6 +39,7 @@ struct Transfer {
 pub struct Incoming {
     pub mode: ServeMode,
     pub listener: TcpListener,
+    pub bridge: Option<TcpListener>,
     pub predecessor: TcpListener,
     pub predecessor_token: String,
     pub pipe: BufReader<Stdin>,
@@ -58,10 +61,11 @@ pub async fn receive() -> Result<Incoming> {
         serde_json::from_slice(&message).context("A supervisor handoff is required.")?;
     ensure!(  // RevExt: 38
   // RevExt: 1
-        transfer.protocol == 1,
+        transfer.protocol == if transfer.bridge.is_some() { 2 } else { 1 },
         "Incompatible supervisor handoff protocol."
     );  // RevExt: 3
     let listener = socket_transfer::receive(transfer.public)?;
+    let bridge = transfer.bridge.map(socket_transfer::receive).transpose()?;
     let predecessor = socket_transfer::receive(transfer.control)?;
     ensure!(  // RevExt: 39
   // RevExt: 2
@@ -71,6 +75,7 @@ pub async fn receive() -> Result<Incoming> {
     Ok(Incoming {
         mode: transfer.mode,
         listener,
+        bridge,
         predecessor,
         predecessor_token: transfer.control_token,
         pipe,
@@ -94,11 +99,11 @@ pub async fn signal(message: &str) -> Result<()> {
     Ok(())
 }
 // RevExt: 22
-pub async fn replace(
+pub(super) async fn replace(
     profile: &Profile,
     mode: ServeMode,
     worker: &Worker,
-    listener: &TcpListener,
+    api: &Api,
     control: &TcpListener,
     control_token: &str,
     installation: &Installation,
@@ -113,13 +118,20 @@ pub async fn replace(
         .stderr(Stdio::inherit());
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    socket_transfer::prepare(&mut command, &[listener, control]);
+    let listener = &api.loopback.listener;
+    let bridge = api.bridge.as_ref().map(|bridge| &bridge.listener);
+    let mut listeners = vec![listener, control];
+    listeners.extend(bridge);
+    socket_transfer::prepare(&mut command, &listeners);
     let mut child = command.spawn()?;
     let result = time::timeout(HANDOFF_TIMEOUT, async {
         let transfer = Transfer {
-            protocol: 1,
+            protocol: if bridge.is_some() { 2 } else { 1 },
             mode,
             public: socket_transfer::offer(listener, &child)?,
+            bridge: bridge
+                .map(|listener| socket_transfer::offer(listener, &child))
+                .transpose()?,
             control: socket_transfer::offer(control, &child)?,
             control_token: control_token.into(),
             installation: installation.clone(),

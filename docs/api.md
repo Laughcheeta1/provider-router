@@ -1,8 +1,10 @@
 # API contract
 
-The public inference API implements a documented subset of the OpenAI API. Set an OpenAI SDK's `baseURL` to `http://127.0.0.1:47831/v1` and its `apiKey` to the client key when authentication is enabled. New installations do not require keys; SDKs that require a nonempty key can use `local` as a placeholder while key requirements are disabled. Native application accounts and provider credentials are not API inputs. The API is available only through a loopback address on this computer.
+The public inference API implements a documented subset of the OpenAI API. Set an OpenAI SDK's `baseURL` to `http://127.0.0.1:47831/v1` and its `apiKey` to the client key when authentication is enabled. New installations do not require keys; SDKs that require a nonempty key can use `local` as a placeholder while key requirements are disabled. Native application accounts and provider credentials are not API inputs. The API listens on loopback by default. Linux hosts can enable an additional [Docker bridge listener](getting-started.md#connect-docker-containers-on-the-same-linux-server) on the same port.
 
 Local access defaults to no authentication. When **Require client API keys** is enabled, every endpoint except `/health` requires `Authorization: Bearer CLIENT_KEY`. Browser access is disabled by default. In API access, approve each exact HTTPS website origin (for example `https://app.example`) under Approved website origins; loopback HTTP origins are supported for development. Origins cannot contain paths, trailing slashes or wildcards. Approved origins receive CORS headers on successes and errors, and OPTIONS accepts GET/POST with authorization, content-type and x-request-id headers. Requests from other origins are rejected before authentication or inference. Local Host headers remain checked against the listener to prevent DNS rebinding. Browser access does not expose settings, provider credentials or account-management operations.
+
+On Linux, `container_bridge_host` must be an RFC 1918 IPv4 or unique-local IPv6 address assigned to the Linux bridge device `docker0` or a Docker-named bridge `br-<12-hex network ID>`. The bridge listener accepts connections only from addresses inside a local Docker bridge network, so hosts that merely route to the bridge address, for example over a VPN, are refused. Setting it also admits the configured bridge IP and `host.docker.internal` as Host authorities with the configured port, for example `172.17.0.1:47831` and `host.docker.internal:47831`. Use brackets around an IPv6 address in URLs and Host headers. Both listeners use the same client-key policy and exact browser origin rules.
 
 ## GET /health
 
@@ -118,5 +120,27 @@ OpenRouter reasoning choices come from the published model catalog. Codex choice
 Disconnecting or aborting an inference HTTP request cancels its local provider operation. A client may also supply a UUIDv7 `X-Request-ID` correlation value and call `POST /v1/inference/<request-id>/cancel` with the same client key. Other arbitrary `X-Request-ID` values are accepted as ordinary client metadata while internal inference identities remain UUIDv7. With keys enabled, cancellation cannot target another client's work. Without keys, local applications share a cancellation identity; do not rely on per-application isolation in that mode. There is no provider or funding fallback.
 
 Errors use `{"error":{"message":"Safe explanation","type":"invalid_request_error","param":null,"code":"STABLE_CODE"}}`. Authentication, rate-limit, unsupported capability, invalid output, cancellation and provider failures have stable codes. Upstream raw errors and request contents are never reflected. JSON Schema and tool arguments are validated before success is returned.
+
+The Router maps upstream Codex and OpenRouter inference responses as follows.
+
+| Upstream result | Router HTTP status | `error.code` |
+| --- | --- | --- |
+| 2xx | Normal completion handling | |
+| 400, 413, 422 | 400 | `PROVIDER_REQUEST_REJECTED` |
+| 401 | 502 | `PROVIDER_AUTH_REQUIRED` |
+| 429 | 429 | `PROVIDER_RATE_LIMIT` |
+| All other non-2xx statuses, including 403, 404 and 5xx, or a transport failure | 502 | `PROVIDER_UNAVAILABLE` |
+| OpenRouter error inside an HTTP 200 body, top-level or per choice | As if its numeric `code` were the upstream status; 502 without one | As if its numeric `code` were the upstream status; `INCOMPLETE_COMPLETION` without one |
+| Codex stream failure with `server_error` | 502 | `PROVIDER_UNAVAILABLE` |
+| Codex stream failure with `rate_limit_exceeded` | 429 | `PROVIDER_RATE_LIMIT` |
+| Any other Codex stream failure or incomplete response | 502 | `INCOMPLETE_COMPLETION` |
+
+For example, if the provider rejects the requested output schema, the Router returns this response with HTTP 400.
+
+```json
+{"error":{"message":"The provider rejected the request as invalid.","type":"invalid_request_error","param":null,"code":"PROVIDER_REQUEST_REJECTED"}}
+```
+
+The Router's inference deadline returns HTTP 504 with `error.code` set to `ROUTER_TIMEOUT`. Explicit client cancellation returns HTTP 499 with `error.code` set to `CANCELLED` on the in-flight inference request.
 
 The versioned extension `POST /v1/inference` accepts an explicit UUIDv7 request and connection ID and returns the normalized completion contract. The standard OpenAI endpoints above work with ordinary SDK clients.

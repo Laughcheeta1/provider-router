@@ -38,6 +38,29 @@ Use `provider-router serve` to start the listener in the foreground, `provider-r
 
 GitHub installers use manual upgrades. The `provider-router status` command shows the worker and supervisor versions while the router is running.
 
+## Connect Docker containers on the same Linux server
+
+On a Linux Docker Engine host, use the default bridge's gateway IP to enable the additional listener. Start Provider Router in the foreground if it is not already running. A running Router applies the setting automatically.
+
+```sh
+bridge_ip=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+provider-router network set --container-bridge-host "$bridge_ip"
+provider-router serve
+```
+
+Add `--add-host host.docker.internal:host-gateway` to the client's `docker run` command or add this entry to the client's Compose service.
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+Set the client's OpenAI API base URL to `http://host.docker.internal:47831/v1`, substituting your configured port if needed. The hostname needs to resolve to the configured bridge IP. If `host-gateway` resolves to another address, use the bridge IP directly or map `host.docker.internal` to that IP in the client container. If a host firewall filters traffic to the gateway, allow the client Docker subnet to reach that bridge IP and TCP port.
+
+In the terminal dashboard, set **Docker bridge IP (Linux)** under **API access**. The address must be an RFC 1918 IPv4 or unique-local IPv6 address on the default Docker bridge (`docker0`) or a user-defined Docker bridge (`br-` plus the first 12 hex digits of its network ID). Other bridges, such as a LAN bridge, are rejected. The bridge listener only answers containers on local Docker bridge networks. Use `provider-router status` to see the active `container_bridge_endpoint` or a bridge error. If the address disappears, moves to another kind of interface, or its port is unavailable, loopback keeps serving and the router retries the bridge listener. Stop and supervisor handoff cover both listeners.
+
+Clear the field in **API access** or run `provider-router network set --clear-container-bridge-host` to disable the bridge listener.
+
 ## Connect a hosted website
 
 Add the website's exact origin, such as `https://app.example`, in API access. In the application, enter the loopback endpoint and its Router client key if key authentication is enabled. The application's connectivity test can check Router access and exposed models without spending provider inference usage. If access fails, check the origin, port, client key, and browser local-network permission.

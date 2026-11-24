@@ -186,7 +186,7 @@ impl<B: InferenceBackend> InferenceService<B> {
         let result = tokio::select! {
             _ = lease.cancel.cancelled() => Err(Failure::cancelled()),
             _ = self.revoked(principal) => Err(Failure::cancelled()),
-            result = tokio::time::timeout(REQUEST_TIMEOUT, actual) => result.unwrap_or_else(|_| Err(Failure::cancelled())),
+            result = tokio::time::timeout(REQUEST_TIMEOUT, actual) => result.unwrap_or_else(|_| Err(Failure::router_timeout())),
         };
         if result.is_ok() && !self.still_authorized(principal) {
             return Err(Failure::new(

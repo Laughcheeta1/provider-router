@@ -32,6 +32,8 @@ pub(super) const CONTROL_FILE: &str = "control.json";
 #[derive(Clone, Default, Debug, Deserialize, Serialize)]
 pub struct Status {
     pub endpoint: Option<String>,
+    #[serde(default)]  // RevExt: 219
+    pub container_bridge_endpoint: Option<String>,
     pub error: Option<String>,
     #[serde(default)]  // RevExt: 162
     pub generation: Option<uuid::Uuid>,

@@ -69,7 +69,7 @@ pub async fn models(
             .await?;
             let catalog: CodexCatalog = bounded_json(response).await?;
             Ok(catalog.models.into_iter().filter_map(codex_model).collect())
-        }
+        }  // RevExt: 139
         Method::Openrouter => {
             let response = send(
                 client
@@ -83,7 +83,7 @@ pub async fn models(
                 .into_iter()
                 .filter_map(openrouter_model)
                 .collect())
-        }
+        }  // RevExt: 140
     }  // RevExt: 105
 }  // RevExt: 54
 // RevExt: 12
@@ -102,13 +102,17 @@ pub async fn infer(
                     .json(&openrouter_payload(request)),
             )
             .await?;
-            openrouter_output(bounded_json::<OpenRouterCompletion>(response).await?)?
-        }
+            let completion = bounded_json::<Value>(response).await?;
+            if let Some(error) = openrouter_body_error(&completion) {
+                bail!(upstream_body_failure(error));
+            }
+            openrouter_output(serde_json::from_value(completion).map_err(|_| invalid_response())?)?
+        }  // RevExt: 141
         Method::Codex => {
             let payload = codex_payload(request)?;
             let response = codex_request(client, connection, "/responses", Some(&payload)).await?;
             codex_output(completed_response(response).await?)?
-        }
+        }  // RevExt: 142
     };
     let mut result = json!({
         "request_id": request["request_id"],
@@ -160,7 +164,7 @@ fn openrouter_payload(request: &Value) -> Value {
     for key in ["response_format", "tool_choice", "parallel_tool_calls"] {
         if let Some(value) = request.get(key) {
             payload[key] = value.clone();
-        }
+        }  // RevExt: 143
     }  // RevExt: 110
     payload
 }  // RevExt: 57
@@ -231,7 +235,7 @@ fn codex_payload(request: &Value) -> Result<Value> {
                 "output": text_content(&message["content"]),
             }));
             continue;
-        }
+        }  // RevExt: 144
         let kind = if role == "assistant" {
             "output_text"
         } else {
@@ -253,18 +257,18 @@ fn codex_payload(request: &Value) -> Result<Value> {
                 vec![]
             } else {
                 vec![json!({"type": kind, "text": text})]
-            }
+            }  // RevExt: 153
         };
         if !content.is_empty() {
             let role = if role == "system" { "developer" } else { role };
             input.push(json!({"role": role, "content": content}));
-        }
+        }  // RevExt: 145
         for call in message["tool_calls"].as_array().into_iter().flatten() {
             input.push(json!({
                 "type": "function_call", "call_id": call["id"],
                 "name": call["function"]["name"], "arguments": call["function"]["arguments"],
             }));
-        }
+        }  // RevExt: 146
     }  // RevExt: 111
 // RevExt: 22
     let tools: Vec<Value> = request["tools"]
@@ -341,12 +345,12 @@ async fn codex_request(
             );
         if let Some(account) = credentials.account_id {
             request = request.header("ChatGPT-Account-ID", account);
-        }
+        }  // RevExt: 147
         let response = request.send().await.map_err(|_| unavailable())?;
         if response.status().as_u16() == 401 && !retry {
             rejected = Some(credentials.access_token);
             continue;
-        }
+        }  // RevExt: 148
         return check_status(response);
     }  // RevExt: 117
     unreachable!("the final Codex attempt returns a response or error")
@@ -359,17 +363,43 @@ async fn send(request: RequestBuilder) -> Result<Response> {
 fn check_status(response: Response) -> Result<Response> {
     match response.status().as_u16() {
         200..=299 => Ok(response),
-        429 => Err(failure(
-            429,
-            "PROVIDER_RATE_LIMIT",
-            "The provider is currently rate limited.",
-        )),
-        401 => Err(failure(
+        status => Err(status_failure(status)),
+    }
+}
+
+/// OpenRouter reports failures after its headers inside an HTTP 200 body, possibly without completion fields.
+fn openrouter_body_error(completion: &Value) -> Option<&Value> {
+    [&completion["error"], &completion["choices"][0]["error"]]
+        .into_iter()
+        .find(|error| !error.is_null())
+}
+
+/// An in-body provider error carries the HTTP status the provider would have returned.
+fn upstream_body_failure(error: &Value) -> anyhow::Error {
+    match error["code"].as_u64().and_then(|code| u16::try_from(code).ok()) {
+        Some(status @ 400..=599) => status_failure(status),
+        _ => incomplete(),
+    }
+}
+
+fn status_failure(status: u16) -> anyhow::Error {
+    match status {
+        400 | 413 | 422 => failure(
+            400,
+            "PROVIDER_REQUEST_REJECTED",
+            "The provider rejected the request as invalid.",
+        ),  // RevExt: 159
+        429 => failure(
+            429,  // RevExt: 176
+            "PROVIDER_RATE_LIMIT",  // RevExt: 178
+            "The provider is currently rate limited.",  // RevExt: 180
+        ),  // RevExt: 160
+        401 => failure(
             502,
             "PROVIDER_AUTH_REQUIRED",
             "The provider rejected the credential. Check the connection in Provider Router.",
-        )),
-        _ => Err(unavailable()),
+        ),  // RevExt: 161
+        _ => unavailable(),
     }  // RevExt: 118
 }  // RevExt: 68
 // RevExt: 27
@@ -401,6 +431,19 @@ fn output_limit() -> anyhow::Error {
     )
 }  // RevExt: 71
 // RevExt: 30
+/// Streamed upstream failures keep the meaning of the equivalent HTTP status.
+fn stream_failure(error: &Value) -> anyhow::Error {
+    match error["code"].as_str() {
+        Some("server_error") => unavailable(),
+        Some("rate_limit_exceeded") => failure(
+            429,  // RevExt: 177
+            "PROVIDER_RATE_LIMIT",  // RevExt: 179
+            "The provider is currently rate limited.",  // RevExt: 181
+        ),
+        _ => incomplete(),
+    }  // RevExt: 173
+}  // RevExt: 172
+// RevExt: 170
 fn incomplete() -> anyhow::Error {
     failure(
         502,
@@ -414,7 +457,7 @@ async fn completed_response(mut response: Response) -> Result<Value> {
     while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
         if let Some(completion) = decoder.feed(&chunk)? {
             return Ok(completion);
-        }
+        }  // RevExt: 149
     }  // RevExt: 120
     bail!(incomplete())
 }  // RevExt: 73
@@ -435,7 +478,7 @@ impl CodexSse {
             self.line.extend_from_slice(line);
             if !line.ends_with(b"\n") {
                 continue;
-            }
+            }  // RevExt: 154
             let line = self.line.strip_suffix(b"\n").unwrap_or_default();
             let line = line.strip_suffix(b"\r").unwrap_or(line);
             if line.is_empty() {
@@ -445,10 +488,10 @@ impl CodexSse {
                     match event["type"].as_str() {
                         Some("response.completed") if event["response"].is_object() => {
                             return Ok(Some(event["response"].clone()));
-                        }
-                        Some("response.failed" | "response.incomplete" | "error") => {
-                            bail!(incomplete());
-                        }
+                        }  // RevExt: 182
+                        Some("response.failed") => bail!(stream_failure(&event["response"]["error"])),
+                        Some("error") => bail!(stream_failure(&event)),
+                        Some("response.incomplete") => bail!(incomplete()),
                         _ => {}
                     }
                 }
@@ -459,9 +502,9 @@ impl CodexSse {
                 }
                 self.data
                     .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
-            }
+            }  // RevExt: 155
             self.line.clear();
-        }
+        }  // RevExt: 150
         Ok(None)
     }  // RevExt: 121
 }  // RevExt: 75
@@ -479,13 +522,13 @@ fn codex_output(response: Value) -> Result<Completion> {
                 calls.push(json!({
                     "id": id, "type": "function", "function": {"name": name, "arguments": arguments},
                 }));
-            }
+            }  // RevExt: 156
             Some("message") => {
                 for part in item["content"].as_array().ok_or_else(invalid_response)? {
                     match part["type"].as_str() {
                         Some("output_text") => {
                             content.push_str(part["text"].as_str().ok_or_else(invalid_response)?);
-                        }
+                        }  // RevExt: 183
                         Some("refusal") => bail!(failure(
                             422,
                             "PROVIDER_REFUSAL",
@@ -494,14 +537,14 @@ fn codex_output(response: Value) -> Result<Completion> {
                         _ => {}
                     }
                 }
-            }
+            }  // RevExt: 157
             Some("reasoning") => {}
             _ => bail!(failure(
                 502,
                 "UNSUPPORTED_PROVIDER_OUTPUT",
                 "The subscription returned an unsupported output item."
             )),
-        }
+        }  // RevExt: 151
     }  // RevExt: 122
     Ok(Completion {
         content,
@@ -675,7 +718,7 @@ impl Catalog {
 mod tests {
     use super::*;
 // RevExt: 45
-    #[test]
+    #[test]  // RevExt: 162
     fn codex_stream_preserves_split_unicode_and_rejects_incomplete_completion() {
         let event = "event: response.completed\r\ndata: {\"type\":\"response.completed\",\r\ndata: \"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"valid 🌿\"}]}],\"usage\":{\"input_tokens\":2,\"output_tokens\":3}}}\r\n\r\n";
         let mut decoder = CodexSse::default();
@@ -692,9 +735,56 @@ mod tests {
                 .feed(b"data: {\"type\":\"response.incomplete\"}\n\n")
                 .is_err()
         );
+    }  // RevExt: 174
+// RevExt: 171
+    #[test]
+    fn openrouter_body_errors_keep_upstream_status_meaning() {
+        let cases = [
+            (json!({"code": 502, "message": "Provider disconnected"}), 502, "PROVIDER_UNAVAILABLE"),
+            (json!({"code": 402, "message": "Insufficient credits"}), 502, "PROVIDER_UNAVAILABLE"),
+            (json!({"code": 429, "message": "Rate limited"}), 429, "PROVIDER_RATE_LIMIT"),
+            (json!({"code": 400, "message": "Bad request"}), 400, "PROVIDER_REQUEST_REJECTED"),
+            (json!({"message": "Unknown"}), 502, "INCOMPLETE_COMPLETION"),
+        ];
+        for (error, status, code) in cases {
+            let top_level = upstream_body_failure(&error).downcast::<ProviderError>().unwrap();
+            assert_eq!((top_level.status, top_level.code), (status, code));
+            // OpenRouter's documented mid-generation failure has partial output and no usage.
+            let choice = json!({
+                "choices": [{"finish_reason": "error", "message": {"content": "partial"}, "error": error}],
+            });
+            let in_choice = upstream_body_failure(openrouter_body_error(&choice).unwrap())
+                .downcast::<ProviderError>()
+                .unwrap();
+            assert_eq!((in_choice.status, in_choice.code), (status, code));
+        }
+        let completion = json!({
+            "error": null,
+            "choices": [{"finish_reason": "stop", "message": {"content": "done"}, "error": null}],
+        });
+        assert!(openrouter_body_error(&completion).is_none());
+    }
+
+    #[test]  // RevExt: 184
+    fn codex_stream_failures_keep_upstream_availability_meaning() {
+        let cases: [(&[u8], u16, &str); 5] = [
+            (b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}\n\n", 502, "PROVIDER_UNAVAILABLE"),
+            (b"data: {\"type\":\"error\",\"code\":\"server_error\"}\n\n", 502, "PROVIDER_UNAVAILABLE"),
+            (b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\"}}}\n\n", 429, "PROVIDER_RATE_LIMIT"),
+            (b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"invalid_prompt\"}}}\n\n", 502, "INCOMPLETE_COMPLETION"),
+            (b"data: {\"type\":\"response.incomplete\"}\n\n", 502, "INCOMPLETE_COMPLETION"),
+        ];  // RevExt: 185
+        for (event, status, code) in cases {
+            let error = CodexSse::default()
+                .feed(event)
+                .unwrap_err()  // RevExt: 187
+                .downcast::<ProviderError>()  // RevExt: 189
+                .unwrap();  // RevExt: 191
+            assert_eq!((error.status, error.code), (status, code));
+        }  // RevExt: 175
     }  // RevExt: 126
 // RevExt: 46
-    #[test]
+    #[test]  // RevExt: 163
     fn codex_payload_carries_images_tool_calls_and_structured_response() {
         let request = json!({
             "model": "codex-test",
@@ -720,7 +810,7 @@ mod tests {
         assert_eq!(payload["store"], false);
     }  // RevExt: 127
 // RevExt: 47
-    #[test]
+    #[test]  // RevExt: 164
     fn openrouter_preserves_tools_reasoning_and_usage() {
         let tool =
             json!({"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}});
@@ -750,5 +840,53 @@ mod tests {
         completion["choices"][0]["finish_reason"] = "length".into();
         assert!(openrouter_output(serde_json::from_value(completion).unwrap()).is_err());
     }  // RevExt: 128
+// RevExt: 135
+    #[test]  // RevExt: 165
+    fn upstream_statuses_distinguish_request_rejections_from_provider_failures() {
+        let cases = [
+            (400, 400, "PROVIDER_REQUEST_REJECTED"),
+            (413, 400, "PROVIDER_REQUEST_REJECTED"),
+            (422, 400, "PROVIDER_REQUEST_REJECTED"),
+            (401, 502, "PROVIDER_AUTH_REQUIRED"),
+            (403, 502, "PROVIDER_UNAVAILABLE"),
+            (404, 502, "PROVIDER_UNAVAILABLE"),
+            (429, 429, "PROVIDER_RATE_LIMIT"),
+            (500, 502, "PROVIDER_UNAVAILABLE"),
+            (503, 502, "PROVIDER_UNAVAILABLE"),
+        ];  // RevExt: 186
+        for (upstream, status, code) in cases {
+            let response = axum::http::Response::builder()
+                .status(upstream)
+                .body("upstream-private-detail")
+                .unwrap();  // RevExt: 166
+            let error = check_status(response.into())
+                .unwrap_err()  // RevExt: 188
+                .downcast::<ProviderError>()  // RevExt: 190
+                .unwrap();  // RevExt: 167
+            assert_eq!((error.status, error.code), (status, code), "HTTP {upstream}");
+            if status == 400 {
+                assert_eq!(error.message, "The provider rejected the request as invalid.");
+            }  // RevExt: 158
+        }  // RevExt: 152
+    }  // RevExt: 137
+// RevExt: 136
+    #[tokio::test]
+    async fn upstream_transport_failure_remains_unavailable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let disconnect = tokio::spawn(async move { drop(listener.accept().await.unwrap()) });
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();  // RevExt: 168
+        let error = send(client.post(format!("http://{address}")))
+            .await
+            .unwrap_err()
+            .downcast::<ProviderError>()
+            .unwrap();  // RevExt: 169
+        assert_eq!((error.status, error.code), (502, "PROVIDER_UNAVAILABLE"));
+        disconnect.await.unwrap();
+    }  // RevExt: 138
 }  // RevExt: 86
 // RevExt: 49

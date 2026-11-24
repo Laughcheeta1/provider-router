@@ -52,14 +52,14 @@ impl<T> Choice<T> {
             value,
             shortcut: None,
             description: "",
-        }
-    }
+        }  // RevExt: 1
+    }  // RevExt: 17
 
     pub fn action(mut self, shortcut: char, description: &'static str) -> Self {
         self.shortcut = Some(shortcut);
         self.description = description;
         self
-    }
+    }  // RevExt: 18
 }
 
 pub struct Dashboard<'a> {
@@ -76,7 +76,7 @@ pub struct Exit;
 impl std::fmt::Display for Exit {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         output.write_str("Terminal closed")
-    }
+    }  // RevExt: 19
 }
 
 impl std::error::Error for Exit {}
@@ -112,7 +112,7 @@ impl Screen {
                 && env::var_os("TERM").is_none_or(|term| term != "dumb"),
             events: EventStream::new(),
         })
-    }
+    }  // RevExt: 20
 
     pub async fn ask(
         &mut self,
@@ -152,8 +152,8 @@ impl Screen {
                 Event::Paste(text) => field.insert(&plain(&text)),
                 _ => {}
             }
-        }
-    }
+        }  // RevExt: 2
+    }  // RevExt: 21
 
     pub fn dashboard<T>(
         &mut self,
@@ -188,7 +188,7 @@ impl Screen {
             }
         })?;
         Ok(())
-    }
+    }  // RevExt: 22
 
     pub async fn event(&mut self) -> Result<Event> {
         loop {
@@ -202,8 +202,8 @@ impl Screen {
                 }
             }
             return Ok(event);
-        }
-    }
+        }  // RevExt: 3
+    }  // RevExt: 23
 
     pub async fn menu<T: Clone>(
         &mut self,
@@ -214,7 +214,7 @@ impl Screen {
     ) -> Result<Option<T>> {
         if choices.is_empty() {
             return Ok(None);
-        }
+        }  // RevExt: 4
         selected = selected.min(choices.len() - 1);
         loop {
             let color = self.color;
@@ -236,8 +236,8 @@ impl Screen {
                     Navigation::Keep => {}
                 }
             }
-        }
-    }
+        }  // RevExt: 5
+    }  // RevExt: 24
 
     pub async fn message(&mut self, title: &str, detail: &str) -> Result<()> {
         let mut offset = 0u16;
@@ -267,8 +267,8 @@ impl Screen {
                     _ => {}
                 }
             }
-        }
-    }
+        }  // RevExt: 6
+    }  // RevExt: 25
 
     pub async fn loading<T>(
         &mut self,
@@ -286,8 +286,8 @@ impl Screen {
                     }
                 }
             }
-        }
-    }
+        }  // RevExt: 7
+    }  // RevExt: 26
 
     fn progress(&mut self, label: &str) -> Result<()> {
         let color = self.color;
@@ -298,13 +298,13 @@ impl Screen {
             draw_panel(frame, color, top(area, 4), label);
         })?;
         Ok(())
-    }
+    }  // RevExt: 27
 }
 
 impl Drop for Screen {
     fn drop(&mut self) {
         restore_terminal();
-    }
+    }  // RevExt: 28
 }
 
 pub enum Navigation {
@@ -316,7 +316,7 @@ pub enum Navigation {
 pub fn navigate<T>(key: KeyEvent, choices: &[Choice<T>], selected: &mut usize) -> Navigation {
     if choices.is_empty() {
         return Navigation::Back;
-    }
+    }  // RevExt: 29
     match key.code {
         KeyCode::Esc => return Navigation::Back,
         KeyCode::Enter => return Navigation::Choose(*selected),
@@ -338,9 +338,9 @@ pub fn navigate<T>(key: KeyEvent, choices: &[Choice<T>], selected: &mut usize) -
             }) {
                 return Navigation::Choose(index);
             }
-        }
+        }  // RevExt: 8
         _ => {}
-    }
+    }  // RevExt: 30
     Navigation::Keep
 }
 
@@ -379,15 +379,15 @@ impl Field {
                 self.insert(&ch.to_string());
             }
             _ => {}
-        }
-    }
+        }  // RevExt: 9
+    }  // RevExt: 31
 
     fn insert(&mut self, text: &str) {
         if self.text.len().saturating_add(text.len()) <= 16_384 {
             self.text.insert_str(self.cursor, text);
             self.cursor += text.len();
-        }
-    }
+        }  // RevExt: 10
+    }  // RevExt: 32
 
     fn line(&self, color: bool, width: u16) -> Line<'static> {
         let before = &self.text[..self.cursor];
@@ -413,7 +413,7 @@ impl Field {
             Span::raw(masked(after)),
         ])
         .style(fill(color, INK, RAISED))
-    }
+    }  // RevExt: 33
 
     fn next(&self) -> usize {
         self.cursor
@@ -421,24 +421,28 @@ impl Field {
                 .chars()
                 .next()
                 .map_or(0, char::len_utf8)
-    }
+    }  // RevExt: 34
 
     fn previous(&self) -> usize {
         self.text[..self.cursor]
             .char_indices()
             .next_back()
             .map_or(0, |(index, _)| index)
-    }
+    }  // RevExt: 35
 }
 
 fn dashboard_detail(info: &Dashboard<'_>) -> String {
     if let Some(endpoint) = info.endpoint {
-        format!("API running  ·  {endpoint}")
+        if info.error.is_some() {
+            "API running  ·  Docker bridge unavailable".to_owned()
+        } else {  // RevExt: 49
+            format!("API running  ·  {endpoint}")
+        }  // RevExt: 11
     } else if let Some(error) = info.error {
         format!("API stopped  ·  {error}")
-    } else {
+    } else {  // RevExt: 52
         "API stopped".to_owned()
-    }
+    }  // RevExt: 36
 }
 
 fn draw_line(frame: &mut Frame<'_>, area: Rect, line: Line<'_>, y: u16) {
@@ -447,8 +451,8 @@ fn draw_line(frame: &mut Frame<'_>, area: Rect, line: Line<'_>, y: u16) {
         frame.render_widget(
             Paragraph::new(line).style(style),
             Rect::new(area.x, area.y + y, area.width, 1),
-        );
-    }
+        );  // RevExt: 57
+    }  // RevExt: 37
 }
 
 fn draw_menu<T>(
@@ -464,14 +468,14 @@ fn draw_menu<T>(
     let mut y = 0;
     if !detail.is_empty() && area.height >= 3 {
         y = draw_text(
-            frame,
-            area,
+            frame,  // RevExt: 63
+            area,  // RevExt: 68
             plain_lines(detail),
             ink(color, MUTED),
             area.height.saturating_sub(2).min(3),
             0,
-        );
-    }
+        );  // RevExt: 58
+    }  // RevExt: 38
     let rows = usize::from(area.height.saturating_sub(y));
     let description = choices.get(selected).map_or("", |item| item.description);
     let show_description = !description.is_empty() && rows >= choices.len() + 2;
@@ -508,7 +512,7 @@ fn draw_menu<T>(
             } else {
                 spans.push(Span::raw(label));
             }
-        } else {
+        } else {  // RevExt: 50
             spans.push(Span::styled(
                 label,
                 if active {
@@ -517,24 +521,24 @@ fn draw_menu<T>(
                     ink(color, MUTED)
                 },
             ));
-        }
-        draw_line(
-            frame,
-            area,
+        }  // RevExt: 12
+        draw_line(  // RevExt: 73
+            frame,  // RevExt: 64
+            area,  // RevExt: 69
             Line::from(spans).style(fill(color, INK, if active { RAISED } else { PANEL })),
             y + offset as u16,
-        );
-    }
+        );  // RevExt: 59
+    }  // RevExt: 39
     if show_description {
         draw_text(
-            frame,
-            area,
+            frame,  // RevExt: 65
+            area,  // RevExt: 70
             description.to_owned(),
             ink(color, MUTED),
             2,
             area.height.saturating_sub(2),
-        );
-    }
+        );  // RevExt: 60
+    }  // RevExt: 40
 }
 
 fn draw_overview(frame: &mut Frame<'_>, color: bool, panel: Rect, info: &Dashboard<'_>) {
@@ -543,7 +547,7 @@ fn draw_overview(frame: &mut Frame<'_>, color: bool, panel: Rect, info: &Dashboa
         ("●  API running", ACCENT)
     } else if info.error.is_some() {
         ("○  API stopped", DANGER)
-    } else {
+    } else {  // RevExt: 53
         ("○  API stopped", WARNING)
     };
     let spaced = area.height >= 9;
@@ -558,15 +562,25 @@ fn draw_overview(frame: &mut Frame<'_>, color: bool, panel: Rect, info: &Dashboa
     let address = info.endpoint.or(info.error).unwrap_or("");
     if !address.is_empty() {
         y += draw_text(
-            frame,
-            area,
+            frame,  // RevExt: 66
+            area,  // RevExt: 71
             plain(address),
             ink(color, MUTED),
             if spaced { 2 } else { 1 },
-            y,
-        );
-    }
-    y += u16::from(spaced);
+            y,  // RevExt: 75
+        );  // RevExt: 61
+    }  // RevExt: 41
+    if info.endpoint.is_some() && info.error.is_some() {
+        draw_line(  // RevExt: 74
+            frame,  // RevExt: 67
+            area,  // RevExt: 72
+            Line::styled("Docker bridge unavailable", ink(color, WARNING)),
+            y,  // RevExt: 76
+        );  // RevExt: 62
+        y += 1;
+    } else {  // RevExt: 54
+        y += u16::from(spaced);
+    }  // RevExt: 42
     draw_line(
         frame,
         area,
@@ -631,7 +645,7 @@ fn draw_text(
 ) -> u16 {
     if area.width == 0 || y >= area.height {
         return 0;
-    }
+    }  // RevExt: 43
     let limit = maximum.min(area.height - y);
     let mut end = 0;
     for line in text.lines() {
@@ -651,11 +665,11 @@ fn draw_text(
             } else {
                 used + cells + usize::from(used != 0)
             };
-        }
+        }  // RevExt: 13
         if end >= usize::from(limit) {
             break;
-        }
-    }
+        }  // RevExt: 14
+    }  // RevExt: 44
     let height = limit.min(u16::try_from(end).unwrap_or(u16::MAX));
     let paragraph = Paragraph::new(text).style(style).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, Rect::new(area.x, area.y + y, area.width, height));
@@ -669,17 +683,17 @@ fn emphasis(color: bool, foreground: Color) -> Style {
 fn fill(color: bool, foreground: Color, background: Color) -> Style {
     if color {
         Style::default().fg(foreground).bg(background)
-    } else {
+    } else {  // RevExt: 55
         Style::default()
-    }
+    }  // RevExt: 45
 }
 
 fn ink(color: bool, foreground: Color) -> Style {
     if color {
         Style::default().fg(foreground)
-    } else {
+    } else {  // RevExt: 56
         Style::default()
-    }
+    }  // RevExt: 46
 }
 
 fn plain(text: &str) -> String {
@@ -706,7 +720,7 @@ fn shell(frame: &mut Frame<'_>, color: bool, keys: &[(&str, &str)]) -> Option<Re
     if full.width < 27 || full.height < 8 {
         frame.render_widget(Paragraph::new("Resize to continue"), full);
         return None;
-    }
+    }  // RevExt: 47
     let width = full.width.saturating_sub(4).min(94);
     let x = full.x + (full.width - width) / 2;
     let header = Rect::new(x, full.y + 1, width, 2);
@@ -730,14 +744,14 @@ fn shell(frame: &mut Frame<'_>, color: bool, keys: &[(&str, &str)]) -> Option<Re
     for (key, action) in keys {
         if !spans.is_empty() {
             spans.push(Span::raw(if width >= 44 { "   " } else { " " }));
-        }
+        }  // RevExt: 15
         if width >= 44 {
             spans.push(Span::styled(format!(" {key} "), fill(color, INK, RAISED)));
-        } else {
+        } else {  // RevExt: 51
             spans.push(Span::styled(*key, ink(color, INK)));
-        }
+        }  // RevExt: 16
         spans.push(Span::styled(format!(" {action}"), ink(color, SUBTLE)));
-    }
+    }  // RevExt: 48
     draw_line(frame, footer, Line::from(spans), 0);
     Some(Rect::new(x, full.y + 4, width, full.height - 7))
 }

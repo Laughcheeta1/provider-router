@@ -41,7 +41,7 @@ async fn dispatch<B: InferenceBackend>(
     let (mut response, origin, id) = match protocol {
         Ok(result) => result,
         Err((failure, origin, id)) => (failure_response(failure), origin, id),
-    };
+    };  // RevExt: 68
     let headers = response.headers_mut();
     headers
         .entry(header::CACHE_CONTROL)
@@ -76,13 +76,17 @@ impl<B: InferenceBackend> Api<B> {
     async fn request(&self, request: Request) -> ProtocolResult {
         let headers = request.headers();
         let state = self.0.snapshot().map_err(|error| (error, None, None))?;
+        let bridge = state.network.container_bridge_address().ok().flatten();
         let allowed = [
-            state.network.loopback_authority(),
-            format!("localhost:{}", state.network.port),
+            Some(state.network.loopback_authority()),
+            Some(format!("localhost:{}", state.network.port)),
+            bridge.map(|address| address.to_string()),
+            bridge.map(|address| format!("host.docker.internal:{}", address.port())),
         ];
         if headers.get(header::HOST).is_some_and(|host| {
             !allowed
                 .iter()  // RevExt: 1
+                .flatten()
                 .any(|value| host.as_bytes() == value.as_bytes())
         }) {
             return Err((
@@ -297,7 +301,7 @@ fn preflight(headers: &HeaderMap) -> Outcome<Response> {
                     !["authorization", "content-type", "x-request-id"]
                         .iter()
                         .any(|allowed| name.eq_ignore_ascii_case(allowed))
-                })
+                })  // RevExt: 79
         })  // RevExt: 58
   // RevExt: 55
     {
@@ -336,3 +340,100 @@ fn failure_response(failure: Failure) -> Response {
         )  // RevExt: 51
             .into_response()
 }  // RevExt: 31
+// RevExt: 59
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        application::contracts::{Completion, Message, Request as Inference},
+        domain::{Connection, Method as ProviderMethod, Model},
+    };  // RevExt: 69
+    use axum::body::Body;
+    use tokio::sync::Notify;
+// RevExt: 60
+    struct PendingBackend {
+        state: State,
+        started: Arc<Notify>,
+    }  // RevExt: 70
+// RevExt: 61
+    impl InferenceBackend for PendingBackend {
+        fn settings(&self) -> anyhow::Result<State> {
+            Ok(self.state.clone())
+        }  // RevExt: 73
+// RevExt: 62
+        async fn prepare_documents(
+            &self,
+            messages: Vec<Message>,
+            _: &Model,
+        ) -> Outcome<Vec<Message>> {
+            Ok(messages)
+        }  // RevExt: 74
+// RevExt: 63
+        async fn complete(&self, _: &Connection, _: &Inference) -> Outcome<Completion> {
+            self.started.notify_one();
+            std::future::pending().await
+        }  // RevExt: 75
+    }  // RevExt: 71
+// RevExt: 64
+    #[tokio::test(start_paused = true)]
+    async fn deadline_and_client_cancel_have_distinct_http_errors() -> anyhow::Result<()> {
+        let mut connection = Connection::new(ProviderMethod::Codex);
+        connection.exposed = true;
+        connection.models.push(Model {
+            id: "test-model".into(),
+            name: "Test model".into(),
+            reasoning_efforts: vec![],
+            default_reasoning_effort: None,
+            context_window: 128_000,
+            max_output_tokens: 4_000,
+            tools: false,
+            structured_output: false,
+            input_modalities: vec!["text".into()],
+        });
+        let started = Arc::new(Notify::new());
+        let backend = PendingBackend {
+            state: State {
+                connections: vec![connection],
+                ..State::default()
+            },
+            started: started.clone(),
+        };  // RevExt: 77
+        let api = Arc::new(Api(InferenceService::new(
+            backend,
+            CancellationToken::new(),
+        )));
+        let infer = |id: Uuid| {
+            axum::http::Request::post("/v1/chat/completions")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-request-id", id.to_string())
+                .body(Body::from(
+                    json!({"model":"test-model","messages":[{"role":"user","content":"Hello"}]})
+                        .to_string(),
+                ))
+        };  // RevExt: 78
+// RevExt: 65
+        let id = Uuid::now_v7();
+        let cancel =
+            axum::http::Request::post(format!("/v1/inference/{id}/cancel")).body(Body::empty())?;
+        let (cancelled, accepted) =
+            tokio::join!(dispatch(ExtractState(api.clone()), infer(id)?), async {
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    started.notified().await;
+                    dispatch(ExtractState(api.clone()), cancel).await
+                })  // RevExt: 80
+                .await
+            });
+        assert_eq!(accepted?.status(), StatusCode::OK);
+// RevExt: 66
+        let timed_out = dispatch(ExtractState(api), infer(Uuid::now_v7())?).await;
+        for (response, status, code) in [
+            (cancelled, 499, "CANCELLED"),
+            (timed_out, 504, "ROUTER_TIMEOUT"),
+        ] {
+            assert_eq!(response.status(), status);
+            let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
+            assert_eq!(body["error"]["code"], code);
+        }  // RevExt: 76
+        Ok(())
+    }  // RevExt: 72
+}  // RevExt: 67

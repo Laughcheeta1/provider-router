@@ -82,41 +82,63 @@ impl TerminalApp {
     async fn network(&mut self) -> Result<()> {
         let network = self.profile.read()?.network;
         let Some(host) = self
-            .screen
+            .screen  // RevExt: 114
             .ask("Listener host", &network.host, "", false)
             .await?  // RevExt: 106
   // RevExt: 97
-        else {
-            return Ok(());
-        };
+        else {  // RevExt: 123
+            return Ok(());  // RevExt: 129
+        };  // RevExt: 136
         let Some(port) = self
-            .screen
+            .screen  // RevExt: 115
             .ask("Listener port", &network.port.to_string(), "", false)
             .await?  // RevExt: 107
   // RevExt: 98
-        else {
-            return Ok(());
-        };
+        else {  // RevExt: 124
+            return Ok(());  // RevExt: 130
+        };  // RevExt: 137
+        let bridge_host = network
+            .container_bridge_host
+            .map(|host| host.to_string())
+            .unwrap_or_default();
+        let Some(bridge_host) = self
+            .screen  // RevExt: 116
+            .ask(  // RevExt: 149
+                "Docker bridge IP (Linux)",
+                &bridge_host,
+                "Use a private IP on docker0 or br-<id>. Leave blank to disable.",
+                false,  // RevExt: 151
+            )  // RevExt: 153
+            .await?  // RevExt: 122
+        else {  // RevExt: 125
+            return Ok(());  // RevExt: 131
+        };  // RevExt: 138
+        let bridge_host = bridge_host.trim();
+        let container_bridge_host = if bridge_host.is_empty() {
+            None
+        } else {  // RevExt: 156
+            Some(bridge_host.parse().context("Enter an IPv4 or IPv6 address.")?)
+        };  // RevExt: 139
         let Some(require_api_key) = self
             .toggle("Require client API keys", network.require_api_key)
             .await?  // RevExt: 108
   // RevExt: 99
-        else {
-            return Ok(());
-        };
+        else {  // RevExt: 126
+            return Ok(());  // RevExt: 132
+        };  // RevExt: 140
         let Some(origins) = self
-            .screen
-            .ask(
+            .screen  // RevExt: 117
+            .ask(  // RevExt: 150
                 "Approved website origins",
                 &network.browser_origins.join(", "),
                 "Enter exact origins separated by commas.",
-                false,
-            )
+                false,  // RevExt: 152
+            )  // RevExt: 154
             .await?  // RevExt: 109
   // RevExt: 100
-        else {
-            return Ok(());
-        };
+        else {  // RevExt: 127
+            return Ok(());  // RevExt: 133
+        };  // RevExt: 141
         let browser_origins = origins
             .split(',')
             .map(str::trim)
@@ -126,6 +148,7 @@ impl TerminalApp {
         self.profile.save_network(Network {
             host: host.trim().to_owned(),
             port: port.trim().parse().context("Use a port from 1 to 65535")?,
+            container_bridge_host,
             require_api_key,
             browser_origins,
         })
@@ -168,8 +191,8 @@ impl TerminalApp {
             Choice::new("Connect OpenRouter", Method::Openrouter),
         ];
         let Some(method) = self.screen.menu("Add a provider", "", &choices, 0).await? else {
-            return Ok(());
-        };
+            return Ok(());  // RevExt: 134
+        };  // RevExt: 142
         let mut connection = Connection::new(method);
         #[cfg(windows)]
         if matches!(connection.method, Method::Codex) {
@@ -204,13 +227,13 @@ impl TerminalApp {
         adding: bool,
     ) -> Result<bool> {
         let Some(name) = self
-            .screen
+            .screen  // RevExt: 118
             .ask("Provider name", &connection.name, "", false)
             .await?  // RevExt: 110
   // RevExt: 101
-        else {
+        else {  // RevExt: 128
             return Ok(false);
-        };
+        };  // RevExt: 143
         connection.name = name.trim().to_owned();
         let key = match connection.method {
             Method::Openrouter => {
@@ -254,7 +277,7 @@ impl TerminalApp {
                 connection.codex_home = (!home.is_empty()).then(|| PathBuf::from(home));
                 None
             }
-        };
+        };  // RevExt: 144
         self.profile
             .save_connection(connection.clone(), key.as_deref())?;
         Ok(true)
@@ -287,8 +310,8 @@ impl TerminalApp {
                 .await;
         }  // RevExt: 5
         let Some(choice) = self.screen.menu("Discover Codex", "", &choices, 0).await? else {
-            return Ok(());
-        };
+            return Ok(());  // RevExt: 135
+        };  // RevExt: 145
         if choice.status != "ready" {
             return self
                 .screen
@@ -376,11 +399,11 @@ impl TerminalApp {
 // RevExt: 70
     async fn models(&mut self, connection: &Connection) -> Result<()> {
         let available = self
-            .screen
+            .screen  // RevExt: 119
             .loading(
                 &format!("Loading models for {}…", connection.name),
                 self.catalog.models(&self.profile, connection),
-            )
+            )  // RevExt: 155
             .await?;
         if available.is_empty() {
             return self
@@ -569,7 +592,7 @@ impl TerminalApp {
                 (status.endpoint, status.error)
             }
             Err(error) => (None, Some(error.to_string())),
-        };
+        };  // RevExt: 146
         if endpoint.is_some() {
             self.launch_error = None;
         }  // RevExt: 15
@@ -589,7 +612,7 @@ impl TerminalApp {
     async fn start(&mut self) -> Result<()> {
         let profile = &self.profile;
         let lease = self
-            .screen
+            .screen  // RevExt: 120
             .loading("Starting the router…", async {
                 runtime::start_background(profile).await?;
                 runtime::attach(profile).await
@@ -611,15 +634,15 @@ impl TerminalApp {
             StartupMode::Startup => 0,
             StartupMode::KeepAfterOpen => 1,
             StartupMode::WhileOpen => 2,
-        };
+        };  // RevExt: 147
         let choices = modes.map(|mode| Choice::new(startup_label(mode), mode));
         let detail = if cfg!(target_os = "linux") {
             "Enable systemd user lingering for startup before sign-in."
-        } else {
+        } else {  // RevExt: 157
             ""
-        };
+        };  // RevExt: 148
         if let Some(mode) = self
-            .screen
+            .screen  // RevExt: 121
             .menu("Startup behavior", detail, &choices, initial)
             .await?  // RevExt: 111
   // RevExt: 103
@@ -713,7 +736,7 @@ fn dashboard_choices(running: bool) -> [Choice<DashboardAction>; 6] {
         if running {
             Choice::new("Stop API", DashboardAction::Stop)
                 .action('r', "Stop serving requests from this router.")
-        } else {
+        } else {  // RevExt: 158
             Choice::new("Start API", DashboardAction::Start)
                 .action('r', "Start serving requests using your saved settings.")
         },
