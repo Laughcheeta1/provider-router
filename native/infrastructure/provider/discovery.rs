@@ -28,11 +28,11 @@ pub async fn discover() -> Result<Vec<Discovered>> {
     probes.spawn(async { candidate(None).await });
     for distribution in wsl_distributions().await {
         probes.spawn(async move { candidate(Some(distribution)).await });
-    }  // RevExt: 1
+    } // RevExt: 1
     let mut candidates = Vec::new();
     while let Some(probe) = probes.join_next().await {
         candidates.push(probe?);
-    }  // RevExt: 2
+    } // RevExt: 2
     candidates.sort_by(|left, right| {
         let left = left.connection.wsl_distribution.as_deref();
         let right = right.connection.wsl_distribution.as_deref();
@@ -81,7 +81,7 @@ async fn candidate(distribution: Option<String>) -> Discovered {
         connection,
         status,
         detail,
-    }  // RevExt: 3
+    } // RevExt: 3
 }
 
 pub(super) async fn codex_client_version(connection: &Connection) -> String {
@@ -99,7 +99,7 @@ pub(super) async fn codex_client_version(connection: &Connection) -> String {
                 return core.into();
             }
         }
-    }  // RevExt: 4
+    } // RevExt: 4
     "0.167.0".into()
 }
 
@@ -149,10 +149,10 @@ fn native_codex(connection: &Connection, arguments: &[&str]) -> Option<Command> 
     command.args(prefix).args(arguments);
     if let Some(path) = search_path {
         command.env("PATH", path);
-    }  // RevExt: 5
+    } // RevExt: 5
     if let Some(home) = &connection.codex_home {
         command.env("CODEX_HOME", home);
-    }  // RevExt: 6
+    } // RevExt: 6
     #[cfg(windows)]
     hide_window(&mut command);
     Some(command)
@@ -169,7 +169,7 @@ fn executable_command(executable: &Path) -> Option<ExecutableCommand> {
     };
     if executable.components().count() > 1 {
         return is_executable(executable).then(|| (executable.into(), vec![], None));
-    }  // RevExt: 7
+    } // RevExt: 7
 
     let base_path = env::var_os("PATH").unwrap_or_default();
     let mut directories: Vec<_> = env::split_paths(&base_path).collect();
@@ -187,7 +187,7 @@ fn executable_command(executable: &Path) -> Option<ExecutableCommand> {
                     .map(|version| version.join("bin")),
             );
         }
-    }  // RevExt: 8
+    } // RevExt: 8
     directories.extend([
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
@@ -236,7 +236,7 @@ fn executable_command(executable: &Path) -> Option<ExecutableCommand> {
                 return Some(("node.exe".into(), vec![script.into_os_string()], None));
             }
         }
-    }  // RevExt: 9
+    } // RevExt: 9
     None
 }
 
@@ -301,7 +301,7 @@ fn valid_distribution(name: &str) -> bool {
 fn wsl_codex(distribution: &str, connection: &Connection, arguments: &[&str]) -> Option<Command> {
     if !valid_distribution(distribution) {
         return None;
-    }  // RevExt: 10
+    } // RevExt: 10
     let mut command = wsl_command(distribution);
     let script = r#"
         set -eu
@@ -357,7 +357,7 @@ pub(super) async fn wsl_realpath(
             "WSL_DISTRIBUTION_INVALID",
             "Choose an installed WSL distribution.",
         ));
-    }  // RevExt: 11
+    } // RevExt: 11
     let mut command = wsl_command(distribution);
     command
         .args([

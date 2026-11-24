@@ -26,7 +26,7 @@ pub struct Request {
     pub tool_choice: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
-}  // RevExt: 31
+} // RevExt: 31
 // RevExt: 3
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,7 +36,7 @@ pub enum Role {
     User,
     Assistant,
     Tool,
-}  // RevExt: 32
+} // RevExt: 32
 // RevExt: 4
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -49,7 +49,7 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-}  // RevExt: 33
+} // RevExt: 33
 // RevExt: 5
 impl Message {
     pub fn text(role: Role, text: String) -> Self {
@@ -61,7 +61,7 @@ impl Message {
             name: None,
         }
     }
-}  // RevExt: 34
+} // RevExt: 34
 // RevExt: 6
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -69,7 +69,7 @@ pub enum Content {
     Text(String),
     Parts(Vec<Part>),
     Null,
-}  // RevExt: 35
+} // RevExt: 35
 // RevExt: 7
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -77,33 +77,33 @@ pub enum Part {
     Text { text: String },
     File { file: Attachment },
     ImageUrl { image_url: Image },
-}  // RevExt: 36
+} // RevExt: 36
 // RevExt: 8
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Attachment {
     pub filename: String,
     pub file_data: String,
-}  // RevExt: 37
+} // RevExt: 37
 // RevExt: 9
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Image {
     pub url: String,
-}  // RevExt: 38
+} // RevExt: 38
 // RevExt: 10
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Tool {
     Function { function: Function },
-}  // RevExt: 39
+} // RevExt: 39
 // RevExt: 11
 impl Tool {
     pub fn function(&self) -> &Function {
         let Self::Function { function } = self;
         function
     }
-}  // RevExt: 40
+} // RevExt: 40
 // RevExt: 12
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -114,33 +114,33 @@ pub struct Function {
     pub parameters: Map<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
-}  // RevExt: 41
+} // RevExt: 41
 // RevExt: 13
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolCall {
     Function { id: String, function: Invocation },
-}  // RevExt: 42
+} // RevExt: 42
 // RevExt: 14
 impl ToolCall {
     pub fn parts(&self) -> (&str, &Invocation) {
         let Self::Function { id, function } = self;
         (id, function)
     }
-}  // RevExt: 43
+} // RevExt: 43
 // RevExt: 15
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Invocation {
     pub name: String,
     pub arguments: String,
-}  // RevExt: 44
+} // RevExt: 44
 // RevExt: 16
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Format {
     JsonSchema { json_schema: Schema },
-}  // RevExt: 45
+} // RevExt: 45
 // RevExt: 17
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -149,7 +149,7 @@ pub struct Schema {
     pub schema: Map<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
-}  // RevExt: 46
+} // RevExt: 46
 // RevExt: 18
 #[derive(Deserialize, Serialize)]
 pub struct Completion {
@@ -162,13 +162,13 @@ pub struct Completion {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-}  // RevExt: 47
+} // RevExt: 47
 // RevExt: 19
 #[derive(Deserialize, Serialize)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
-}  // RevExt: 48
+} // RevExt: 48
 // RevExt: 20
 impl Request {
     pub fn validate(&self, model: &Model) -> Outcome<()> {
@@ -209,7 +209,7 @@ impl Request {
                 "The output token limit exceeds this model’s capability.",
             ));
         }
-// RevExt: 21
+        // RevExt: 21
         let mut calls = HashSet::new();
         let mut answered = HashSet::new();
         for message in &self.messages {
@@ -262,7 +262,7 @@ impl Request {
                 "Supply each preceding function result before requesting another inference.",
             ));
         }
-// RevExt: 22
+        // RevExt: 22
         let mut tool_names = HashSet::new();
         for tool in &self.tools {
             let function = tool.function();
@@ -290,7 +290,7 @@ impl Request {
             _ => Ok(()),
         }
     }
-// RevExt: 23
+    // RevExt: 23
     pub fn evaluate(&self, completion: &Completion, connection: &Connection) -> Outcome<()> {
         if completion.request_id != self.request_id
             || completion.model != self.model
@@ -388,7 +388,7 @@ impl Request {
         }
         Ok(())
     }
-}  // RevExt: 49
+} // RevExt: 49
 // RevExt: 24
 #[derive(Clone)]
 pub enum Choice {
@@ -396,7 +396,7 @@ pub enum Choice {
     None,
     Required,
     Named(String),
-}  // RevExt: 50
+} // RevExt: 50
 // RevExt: 25
 pub fn parse_choice(value: &Value) -> Outcome<Choice> {
     match value.as_str() {
@@ -410,14 +410,14 @@ pub fn parse_choice(value: &Value) -> Outcome<Choice> {
             .ok_or_else(Failure::invalid),
         _ => Err(Failure::invalid()),
     }
-}  // RevExt: 51
+} // RevExt: 51
 // RevExt: 26
 fn validator(schema: &Map<String, Value>) -> Option<jsonschema::Validator> {
     jsonschema::options()
         .should_validate_formats(false)
         .build(&Value::Object(schema.clone()))
         .ok()
-}  // RevExt: 52
+} // RevExt: 52
 // RevExt: 27
 fn validate_schema(schema: &Map<String, Value>) -> Outcome<()> {
     validator(schema).map(|_| ()).ok_or_else(|| {
@@ -426,16 +426,16 @@ fn validate_schema(schema: &Map<String, Value>) -> Outcome<()> {
             "Tool and response schemas must be valid local JSON schemas.",
         )
     })
-}  // RevExt: 53
+} // RevExt: 53
 // RevExt: 28
 fn valid_json(schema: &Map<String, Value>, instance: &str) -> bool {
     let Ok(instance) = serde_json::from_str::<Value>(instance) else {
         return false;
     };
     validator(schema).is_some_and(|validator| validator.is_valid(&instance))
-}  // RevExt: 54
+} // RevExt: 54
 // RevExt: 29
 pub fn has_file(message: &Message) -> bool {
     matches!(&message.content, Content::Parts(parts) if parts.iter().any(|part| matches!(part, Part::File { .. })))
-}  // RevExt: 55
+} // RevExt: 55
 // RevExt: 30

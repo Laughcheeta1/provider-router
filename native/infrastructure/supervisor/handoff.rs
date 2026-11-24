@@ -22,7 +22,7 @@ pub enum ServeMode {
     Foreground,
     Background,
     Boot,
-}  // RevExt: 36
+} // RevExt: 36
 // RevExt: 37
 #[derive(Serialize, Deserialize)]
 struct Transfer {
@@ -59,19 +59,21 @@ pub async fn receive() -> Result<Incoming> {
         .await?;
     let transfer: Transfer =
         serde_json::from_slice(&message).context("A supervisor handoff is required.")?;
-    ensure!(  // RevExt: 38
-  // RevExt: 1
+    ensure!(  // RevExt: 42
+        // RevExt: 38
+        // RevExt: 1
         transfer.protocol == if transfer.bridge.is_some() { 2 } else { 1 },
         "Incompatible supervisor handoff protocol."
-    );  // RevExt: 3
+    ); // RevExt: 3
     let listener = socket_transfer::receive(transfer.public)?;
     let bridge = transfer.bridge.map(socket_transfer::receive).transpose()?;
     let predecessor = socket_transfer::receive(transfer.control)?;
-    ensure!(  // RevExt: 39
-  // RevExt: 2
+    ensure!(  // RevExt: 43
+        // RevExt: 39
+        // RevExt: 2
         listener.local_addr()?.ip().is_loopback() && predecessor.local_addr()?.ip().is_loopback(),
         "Unexpected inherited listener address."
-    );  // RevExt: 4
+    ); // RevExt: 4
     Ok(Incoming {
         mode: transfer.mode,
         listener,
@@ -138,30 +140,32 @@ pub(super) async fn replace(
         };
         let mut stdin = child
             .stdin
-            .take()  // RevExt: 5
+            .take() // RevExt: 5
             .context("Replacement stdin is unavailable.")?;
         let stdout = child
             .stdout
-            .take()  // RevExt: 6
+            .take() // RevExt: 6
             .context("Replacement stdout is unavailable.")?;
         let mut stdout = BufReader::new(stdout);
         stdin.write_all(&serde_json::to_vec(&transfer)?).await?;
         stdin.write_all(b"\n").await?;
         let mut line = String::new();
         (&mut stdout).take(128).read_line(&mut line).await?;
-        ensure!(  // RevExt: 40
-  // RevExt: 7
+        ensure!(  // RevExt: 44
+            // RevExt: 40
+            // RevExt: 7
             line.trim_end() == worker.version,
             "The replacement supervisor did not become ready."
-        );  // RevExt: 9
+        ); // RevExt: 9
         stdin.write_all(&[1]).await?;
         line.clear();
         (&mut stdout).take(128).read_line(&mut line).await?;
-        ensure!(  // RevExt: 41
-  // RevExt: 8
+        ensure!(  // RevExt: 45
+            // RevExt: 41
+            // RevExt: 8
             line.trim_end() == "active",
             "The replacement supervisor did not activate."
-        );  // RevExt: 10
+        ); // RevExt: 10
         Ok::<_, anyhow::Error>(())
     })
     .await;

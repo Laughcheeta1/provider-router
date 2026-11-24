@@ -28,16 +28,20 @@ style::{Color, Modifier, Style},
 // RevExt: 110
 type Tty = Terminal<CrosstermBackend<Stdout>>;
 // RevExt: 111
-const CANVAS: Color = Color::Rgb(16, 20, 27);
-const PANEL: Color = Color::Rgb(23, 29, 39);
-const RAISED: Color = Color::Rgb(32, 43, 59);
-const EDGE: Color = Color::Rgb(52, 66, 87);
-const INK: Color = Color::Rgb(231, 238, 248);
-const MUTED: Color = Color::Rgb(169, 184, 205);
-const SUBTLE: Color = Color::Rgb(126, 145, 172);
-const ACCENT: Color = Color::Rgb(117, 231, 209);
-const WARNING: Color = Color::Rgb(243, 201, 132);
-const DANGER: Color = Color::Rgb(255, 153, 159);
+// Dracula palette: background and current-line surfaces, foreground text, comment for hints,
+// purple for focus, and the green, orange, and red accents for status.
+const CANVAS: Color = Color::Rgb(40, 42, 54);
+const PANEL: Color = Color::Rgb(40, 42, 54);
+const RAISED: Color = Color::Rgb(68, 71, 90);
+const SELECTED: Color = Color::Rgb(68, 71, 90);
+const EDGE: Color = Color::Rgb(98, 114, 164);
+const INK: Color = Color::Rgb(248, 248, 242);
+const MUTED: Color = Color::Rgb(248, 248, 242);
+const SUBTLE: Color = Color::Rgb(98, 114, 164);
+const ACCENT: Color = Color::Rgb(189, 147, 249);
+const SUCCESS: Color = Color::Rgb(80, 250, 123);
+const WARNING: Color = Color::Rgb(255, 184, 108);
+const DANGER: Color = Color::Rgb(255, 85, 85);
 // RevExt: 112
 pub struct Choice<T> {
     pub label: String,  // RevExt: 277
@@ -836,7 +840,7 @@ fn draw_form(
             break;
         }
         let active = index == cursor;
-        let background = if active { RAISED } else { PANEL };
+        let background = if active { SELECTED } else { PANEL };  // RevExt: 392
         let label_style = match (&entry.kind, active) {
             (EntryKind::Action, _) => emphasis(color, DANGER),
             (_, true) => emphasis(color, INK),
@@ -967,7 +971,7 @@ fn draw_checklist(
             Span::styled(note, ink(color, SUBTLE)),
         ]);
         let line_y = y + offset as u16;
-        let background = if active { RAISED } else { PANEL };
+        let background = if active { SELECTED } else { PANEL };  // RevExt: 393
         draw_line(frame, inside, row.style(fill(color, INK, background)), line_y);
         let bounds = Rect::new(inside.x, inside.y + line_y, inside.width, 1);
         hits.rows.push((bounds, start + offset));  // RevExt: 388
@@ -1048,7 +1052,7 @@ fn draw_menu<T>(
         draw_line(  // RevExt: 73
             frame,  // RevExt: 64
             area,  // RevExt: 69
-            Line::from(spans).style(fill(color, INK, if active { RAISED } else { PANEL })),
+            Line::from(spans).style(fill(color, INK, if active { SELECTED } else { PANEL })),
             y + offset as u16,
         );  // RevExt: 59
         let bounds = Rect::new(area.x, area.y + y + offset as u16, area.width, 1);
@@ -1069,7 +1073,7 @@ fn draw_menu<T>(
 fn draw_overview(frame: &mut Frame<'_>, color: bool, panel: Rect, info: &Dashboard<'_>) {
     let area = draw_panel(frame, color, panel, "Router status");
     let (label, state_color) = if info.endpoint.is_some() {
-        ("●  API running", ACCENT)
+        ("●  API running", SUCCESS)
     } else if info.error.is_some() {
         ("○  API stopped", DANGER)
     } else {  // RevExt: 53

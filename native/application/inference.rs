@@ -5,7 +5,7 @@ use std::{
     future::Future,
     sync::{Arc, Mutex},
     time::Duration,
-};  // RevExt: 23
+}; // RevExt: 23
 // RevExt: 2
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -17,7 +17,7 @@ use uuid::Uuid;
 use super::{
     contracts::{self, Completion, Message, Request as Inference},
     failure::{Failure, Outcome},
-};  // RevExt: 24
+}; // RevExt: 24
 use crate::domain::{Connection, Model, State};
 // RevExt: 4
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
@@ -34,14 +34,14 @@ pub trait InferenceBackend: Send + Sync + 'static {
         connection: &Connection,
         request: &Inference,
     ) -> impl Future<Output = Outcome<Completion>> + Send;
-}  // RevExt: 25
+} // RevExt: 25
 // RevExt: 6
 pub struct InferenceService<B> {
     backend: B,
     registry: Arc<Mutex<Registry>>,
     document_slots: Arc<Semaphore>,
     shutdown: CancellationToken,
-}  // RevExt: 26
+} // RevExt: 26
 // RevExt: 7
 impl<B: InferenceBackend> InferenceService<B> {
     pub fn new(backend: B, shutdown: CancellationToken) -> Self {
@@ -50,13 +50,13 @@ impl<B: InferenceBackend> InferenceService<B> {
             registry: Arc::new(Mutex::new(Registry::default())),
             document_slots: Arc::new(Semaphore::new(2)),
             shutdown,
-        }  // RevExt: 37
-    }  // RevExt: 46
-// RevExt: 8
+        } // RevExt: 37
+    } // RevExt: 46
+    // RevExt: 8
     pub fn snapshot(&self) -> Outcome<State> {
         self.backend.settings().map_err(|_| Failure::settings())
-    }  // RevExt: 47
-// RevExt: 9
+    } // RevExt: 47
+    // RevExt: 9
     pub fn cancel(&self, id: Uuid, principal: Principal) -> Outcome<()> {
         let registry = self.registry.lock().map_err(|_| Failure::settings())?;
         let pending = registry
@@ -66,8 +66,8 @@ impl<B: InferenceBackend> InferenceService<B> {
             .ok_or_else(Failure::request_not_found)?;
         pending.cancel.cancel();
         Ok(())
-    }  // RevExt: 48
-// RevExt: 10
+    } // RevExt: 48
+    // RevExt: 10
     fn begin(&self, id: Uuid, client: Uuid) -> Outcome<Lease> {
         let mut registry = self.registry.lock().map_err(|_| Failure::settings())?;
         if registry.active.contains_key(&id) || registry.recent.contains(&id) {
@@ -76,7 +76,7 @@ impl<B: InferenceBackend> InferenceService<B> {
                 "REQUEST_REPLAYED",
                 "This request identifier has already been used.",
             ));
-        }  // RevExt: 38
+        } // RevExt: 38
         if registry.active.len() >= 16
             || registry
                 .active
@@ -90,7 +90,7 @@ impl<B: InferenceBackend> InferenceService<B> {
                 "CLIENT_BUSY",
                 "Too many inference requests are active.",
             ));
-        }  // RevExt: 39
+        } // RevExt: 39
         let cancel = self.shutdown.child_token();
         registry.active.insert(
             id,
@@ -104,8 +104,8 @@ impl<B: InferenceBackend> InferenceService<B> {
             id,
             cancel,
         })
-    }  // RevExt: 49
-// RevExt: 11
+    } // RevExt: 49
+    // RevExt: 11
     pub async fn infer(
         &self,
         state: &State,
@@ -116,7 +116,7 @@ impl<B: InferenceBackend> InferenceService<B> {
         if request.request_id.get_version_num() != 7 || request.connection_id.get_version_num() != 7
         {
             return Err(Failure::invalid());
-        }  // RevExt: 40
+        } // RevExt: 40
         let connection = exposed(state)
             .find(|connection| connection.id == request.connection_id)
             .ok_or_else(|| {
@@ -141,7 +141,7 @@ impl<B: InferenceBackend> InferenceService<B> {
                 .default_reasoning_effort
                 .clone()
                 .or_else(|| model.reasoning_efforts.first().cloned());
-        }  // RevExt: 41
+        } // RevExt: 41
         let lease = self.begin(request.request_id, principal.owner)?;
         let actual = async {
             if request.messages.iter().any(contracts::has_file) {
@@ -194,10 +194,10 @@ impl<B: InferenceBackend> InferenceService<B> {
                 "CLIENT_UNAUTHORIZED",
                 "The client key was revoked.",
             ));
-        }  // RevExt: 42
+        } // RevExt: 42
         result
-    }  // RevExt: 50
-// RevExt: 12
+    } // RevExt: 50
+    // RevExt: 12
     fn still_authorized(&self, principal: Principal) -> bool {
         let Ok(state) = self.backend.settings() else {
             return false;
@@ -209,8 +209,8 @@ impl<B: InferenceBackend> InferenceService<B> {
                     client.id == principal.owner && hash_matches(&client.token_hash, &hash)
                 })
             })
-    }  // RevExt: 51
-// RevExt: 13
+    } // RevExt: 51
+    // RevExt: 13
     async fn revoked(&self, principal: Principal) {
         let mut interval = tokio::time::interval(Duration::from_millis(500));
         loop {
@@ -218,9 +218,9 @@ impl<B: InferenceBackend> InferenceService<B> {
             if !self.still_authorized(principal) {
                 return;
             }
-        }  // RevExt: 43
-    }  // RevExt: 52
-}  // RevExt: 27
+        } // RevExt: 43
+    } // RevExt: 52
+} // RevExt: 27
 // RevExt: 14
 fn method_name(connection: &Connection) -> String {
     serde_json::to_value(connection.method)
@@ -228,32 +228,32 @@ fn method_name(connection: &Connection) -> String {
         .as_str()
         .unwrap_or_default()
         .to_owned()
-}  // RevExt: 28
+} // RevExt: 28
 // RevExt: 15
 pub fn exposed(state: &State) -> impl Iterator<Item = &Connection> {
     state
         .connections
         .iter()
         .filter(|connection| connection.exposed)
-}  // RevExt: 29
+} // RevExt: 29
 // RevExt: 16
 #[derive(Default)]
 struct Registry {
     active: HashMap<Uuid, Pending>,
     recent: HashSet<Uuid>,
     order: VecDeque<Uuid>,
-}  // RevExt: 30
+} // RevExt: 30
 // RevExt: 17
 struct Pending {
     client: Uuid,
     cancel: CancellationToken,
-}  // RevExt: 31
+} // RevExt: 31
 // RevExt: 18
 struct Lease {
     registry: Arc<Mutex<Registry>>,
     id: Uuid,
     cancel: CancellationToken,
-}  // RevExt: 32
+} // RevExt: 32
 // RevExt: 19
 impl Drop for Lease {
     fn drop(&mut self) {
@@ -267,24 +267,23 @@ impl Drop for Lease {
             {
                 registry.recent.remove(&oldest);
             }
-        }  // RevExt: 44
-    }  // RevExt: 53
-}  // RevExt: 33
+        } // RevExt: 44
+    } // RevExt: 53
+} // RevExt: 33
 // RevExt: 20
 #[derive(Clone, Copy)]
 pub struct Principal {
     owner: Uuid,
     token_hash: Option<[u8; 32]>,
-}  // RevExt: 34
+} // RevExt: 34
 // RevExt: 21
 pub fn authenticate(state: &State, token: Option<&str>) -> Outcome<Principal> {
     if let Some(token) = token.filter(|value| {
-            value.len() == 43
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        })
-    {
+        value.len() == 43
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    }) {
         let hash = Sha256::digest(token.as_bytes()).into();
         if let Some(client) = state
             .clients
@@ -295,20 +294,20 @@ pub fn authenticate(state: &State, token: Option<&str>) -> Outcome<Principal> {
                 owner: client.id,
                 token_hash: Some(hash),
             });
-        }  // RevExt: 45
-    }  // RevExt: 54
+        } // RevExt: 45
+    } // RevExt: 54
     if state.network.require_api_key {
         return Err(Failure::new(
             401,
             "CLIENT_UNAUTHORIZED",
             "A valid Provider Router client key is required.",
         ));
-    }  // RevExt: 55
+    } // RevExt: 55
     Ok(Principal {
         owner: state.instance_id,
         token_hash: None,
     })
-}  // RevExt: 35
+} // RevExt: 35
 // RevExt: 22
 fn hash_matches(expected: &str, actual: &[u8; 32]) -> bool {
     let Some(hash) = hex::decode(expected)
@@ -318,4 +317,4 @@ fn hash_matches(expected: &str, actual: &[u8; 32]) -> bool {
         return false;
     };
     bool::from(hash.ct_eq(actual))
-}  // RevExt: 36
+} // RevExt: 36

@@ -29,7 +29,7 @@ pub fn router<B: InferenceBackend>(backend: B, shutdown: CancellationToken) -> R
     Router::new()
         .fallback(dispatch::<B>)
         .with_state(Arc::new(Api(InferenceService::new(backend, shutdown))))
-}  // RevExt: 18
+} // RevExt: 18
 // RevExt: 7
 struct Api<B>(InferenceService<B>);
 // RevExt: 8
@@ -41,7 +41,7 @@ async fn dispatch<B: InferenceBackend>(
     let (mut response, origin, id) = match protocol {
         Ok(result) => result,
         Err((failure, origin, id)) => (failure_response(failure), origin, id),
-    };  // RevExt: 68
+    }; // RevExt: 68
     let headers = response.headers_mut();
     headers
         .entry(header::CACHE_CONTROL)
@@ -56,16 +56,16 @@ async fn dispatch<B: InferenceBackend>(
         headers.insert(
             header::ACCESS_CONTROL_EXPOSE_HEADERS,
             HeaderValue::from_static("x-request-id"),
-        );  // RevExt: 24
-    }  // RevExt: 26
+        ); // RevExt: 24
+    } // RevExt: 26
     if let Some(id) = id {
         headers.insert(
             "x-request-id",
             HeaderValue::from_str(&id.to_string()).expect("UUID is a valid header"),
-        );  // RevExt: 25
-    }  // RevExt: 27
+        ); // RevExt: 25
+    } // RevExt: 27
     response
-}  // RevExt: 19
+} // RevExt: 19
 // RevExt: 9
 type ProtocolResult = Result<
     (Response, Option<HeaderValue>, Option<Uuid>),
@@ -85,7 +85,7 @@ impl<B: InferenceBackend> Api<B> {
         ];
         if headers.get(header::HOST).is_some_and(|host| {
             !allowed
-                .iter()  // RevExt: 1
+                .iter() // RevExt: 1
                 .flatten()
                 .any(|value| host.as_bytes() == value.as_bytes())
         }) {
@@ -97,14 +97,14 @@ impl<B: InferenceBackend> Api<B> {
                 ),
                 None,
                 None,
-            ));  // RevExt: 32
-        }  // RevExt: 35
+            )); // RevExt: 32
+        } // RevExt: 35
         let origin = headers.get(header::ORIGIN).cloned();
         if origin.as_ref().is_some_and(|origin| {
             !state
                 .network
                 .browser_origins
-                .iter()  // RevExt: 2
+                .iter() // RevExt: 2
                 .any(|allowed| origin.as_bytes() == allowed.as_bytes())
         }) {
             return Err((
@@ -115,15 +115,15 @@ impl<B: InferenceBackend> Api<B> {
                 ),
                 None,
                 None,
-            ));  // RevExt: 33
-        }  // RevExt: 36
+            )); // RevExt: 33
+        } // RevExt: 36
         let mut id = None;
         match self.handle(request, &state, &mut id).await {
             Ok(response) => Ok((response, origin, id)),
             Err(failure) => Err((failure, origin, id)),
-        }  // RevExt: 37
-    }  // RevExt: 28
-// RevExt: 11
+        } // RevExt: 37
+    } // RevExt: 28
+    // RevExt: 11
     async fn handle(
         &self,
         request: Request,
@@ -135,14 +135,14 @@ impl<B: InferenceBackend> Api<B> {
         let health = || {
             json!({"name":"provider-router","protocol_version":1,"instance_id":state.instance_id,
             "version":env!("CARGO_PKG_VERSION"),"authentication_required":state.network.require_api_key})
-        };  // RevExt: 44
+        }; // RevExt: 44
         if request.method() == Method::OPTIONS {
             return preflight(headers);
-        }  // RevExt: 38
+        } // RevExt: 38
         if request.method() == Method::GET && path == "/health" {
             return Ok(Json(health()).into_response());
-        }  // RevExt: 39
-// RevExt: 12
+        } // RevExt: 39
+        // RevExt: 12
         let token = headers
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
@@ -169,26 +169,27 @@ impl<B: InferenceBackend> Api<B> {
                 }
                 _ => Err(Failure::not_found()),
             };
-        }  // RevExt: 40
+        } // RevExt: 40
         if request.method() != Method::POST {
             return Err(Failure::not_found());
-        }  // RevExt: 41
+        } // RevExt: 41
         if let Some(id) = path
             .strip_prefix("/v1/inference/")
             .and_then(|value| value.strip_suffix("/cancel"))
-        {  // RevExt: 56
-  // RevExt: 48
+        {  // RevExt: 81
+            // RevExt: 56
+            // RevExt: 48
             let id = Uuid::parse_str(id).map_err(|_| Failure::request_not_found())?;
             self.0.cancel(id, principal)?;
             return Ok(Json(json!({"cancelled":true})).into_response());
-        }  // RevExt: 42
-// RevExt: 13
+        } // RevExt: 42
+        // RevExt: 13
         let surface = match path {
             "/v1/chat/completions" | "/v1/attachment-checks" => Some(openai::Surface::Chat),
             "/v1/responses" => Some(openai::Surface::Responses),
             "/v1/inference" => None,
             _ => return Err(Failure::not_found()),
-        };  // RevExt: 45
+        }; // RevExt: 45
         let check_attachments = path == "/v1/attachment-checks";
         let correlation = headers
             .get("x-request-id")
@@ -203,18 +204,19 @@ impl<B: InferenceBackend> Api<B> {
                     .next()
                     .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
             })
-        {  // RevExt: 57
-  // RevExt: 49
+        {  // RevExt: 82
+            // RevExt: 57
+            // RevExt: 49
             return Err(Failure::new(
                 415,
                 "CONTENT_TYPE_REQUIRED",
                 "Use application/json for inference requests.",
-            ));  // RevExt: 34
-        }  // RevExt: 43
+            )); // RevExt: 34
+        } // RevExt: 43
         let bytes = tokio::time::timeout(
             REQUEST_BODY_TIMEOUT,
             to_bytes(request.into_body(), BODY_LIMIT),
-        )  // RevExt: 50
+        ) // RevExt: 50
         .await
         .map_err(|_| {
             Failure::new(
@@ -236,7 +238,7 @@ impl<B: InferenceBackend> Api<B> {
                 )
             } else {
                 Failure::bad("INVALID_JSON", "The request body could not be read.")
-            }  // RevExt: 52
+            } // RevExt: 52
         })?;
         let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
             Failure::bad("INVALID_JSON", "The request body must contain valid JSON.")
@@ -250,12 +252,12 @@ impl<B: InferenceBackend> Api<B> {
                     correlation.unwrap_or_else(Uuid::now_v7),
                 )?;
                 (openai.request.clone(), Some(openai))
-            }  // RevExt: 53
+            } // RevExt: 53
             None => (
                 serde_json::from_value(value).map_err(|_| Failure::invalid())?,
                 None,
             ),
-        };  // RevExt: 46
+        }; // RevExt: 46
         *request_id = Some(inference.request_id);
         let completion = self
             .0
@@ -264,10 +266,10 @@ impl<B: InferenceBackend> Api<B> {
         Ok(match openai {
             Some(openai) => openai::response(&openai, &completion),
             None => Json(completion).into_response(),
-        })  // RevExt: 54
-    }  // RevExt: 29
-// RevExt: 14
-}  // RevExt: 20
+        }) // RevExt: 54
+    } // RevExt: 29
+    // RevExt: 14
+} // RevExt: 20
 // RevExt: 15
 fn models(state: &State) -> Value {
     let rows: Vec<_> = exposed(state).flat_map(|connection| connection.models.iter().map(|model| {
@@ -281,7 +283,7 @@ fn models(state: &State) -> Value {
                 "input_modalities":model.input_modalities}})
     })).collect();
     json!({"object":"list","data":rows})
-}  // RevExt: 21
+} // RevExt: 21
 // RevExt: 16
 fn preflight(headers: &HeaderMap) -> Outcome<Response> {
     let method = headers
@@ -301,16 +303,17 @@ fn preflight(headers: &HeaderMap) -> Outcome<Response> {
                     !["authorization", "content-type", "x-request-id"]
                         .iter()
                         .any(|allowed| name.eq_ignore_ascii_case(allowed))
-                })  // RevExt: 79
-        })  // RevExt: 58
-  // RevExt: 55
+                }) // RevExt: 79
+        })
+    // RevExt: 58
+    // RevExt: 55
     {
         return Err(Failure::new(
             403,
             "CORS_PREFLIGHT_REJECTED",
             "This browser request method or header is not supported.",
         ));
-    }  // RevExt: 30
+    } // RevExt: 30
     Ok((
         StatusCode::NO_CONTENT,
         [
@@ -322,7 +325,7 @@ fn preflight(headers: &HeaderMap) -> Outcome<Response> {
         ],
     )
         .into_response())
-}  // RevExt: 22
+} // RevExt: 22
 // RevExt: 17
 fn failure_response(failure: Failure) -> Response {
     let status = StatusCode::from_u16(failure.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -331,7 +334,7 @@ fn failure_response(failure: Failure) -> Response {
         429 => "rate_limit_error",
         500.. => "api_error",
         _ => "invalid_request_error",
-    };  // RevExt: 47
+    }; // RevExt: 47
     (
             status,
             Json(
@@ -339,7 +342,7 @@ fn failure_response(failure: Failure) -> Response {
             ),
         )  // RevExt: 51
             .into_response()
-}  // RevExt: 31
+} // RevExt: 31
 // RevExt: 59
 #[cfg(test)]
 mod tests {
@@ -347,34 +350,34 @@ mod tests {
     use crate::{
         application::contracts::{Completion, Message, Request as Inference},
         domain::{Connection, Method as ProviderMethod, Model},
-    };  // RevExt: 69
+    }; // RevExt: 69
     use axum::body::Body;
     use tokio::sync::Notify;
-// RevExt: 60
+    // RevExt: 60
     struct PendingBackend {
         state: State,
         started: Arc<Notify>,
-    }  // RevExt: 70
-// RevExt: 61
+    } // RevExt: 70
+    // RevExt: 61
     impl InferenceBackend for PendingBackend {
         fn settings(&self) -> anyhow::Result<State> {
             Ok(self.state.clone())
-        }  // RevExt: 73
-// RevExt: 62
+        } // RevExt: 73
+        // RevExt: 62
         async fn prepare_documents(
             &self,
             messages: Vec<Message>,
             _: &Model,
         ) -> Outcome<Vec<Message>> {
             Ok(messages)
-        }  // RevExt: 74
-// RevExt: 63
+        } // RevExt: 74
+        // RevExt: 63
         async fn complete(&self, _: &Connection, _: &Inference) -> Outcome<Completion> {
             self.started.notify_one();
             std::future::pending().await
-        }  // RevExt: 75
-    }  // RevExt: 71
-// RevExt: 64
+        } // RevExt: 75
+    } // RevExt: 71
+    // RevExt: 64
     #[tokio::test(start_paused = true)]
     async fn deadline_and_client_cancel_have_distinct_http_errors() -> anyhow::Result<()> {
         let mut connection = Connection::new(ProviderMethod::Codex);
@@ -397,7 +400,7 @@ mod tests {
                 ..State::default()
             },
             started: started.clone(),
-        };  // RevExt: 77
+        }; // RevExt: 77
         let api = Arc::new(Api(InferenceService::new(
             backend,
             CancellationToken::new(),
@@ -410,8 +413,8 @@ mod tests {
                     json!({"model":"test-model","messages":[{"role":"user","content":"Hello"}]})
                         .to_string(),
                 ))
-        };  // RevExt: 78
-// RevExt: 65
+        }; // RevExt: 78
+        // RevExt: 65
         let id = Uuid::now_v7();
         let cancel =
             axum::http::Request::post(format!("/v1/inference/{id}/cancel")).body(Body::empty())?;
@@ -420,11 +423,11 @@ mod tests {
                 tokio::time::timeout(Duration::from_secs(1), async {
                     started.notified().await;
                     dispatch(ExtractState(api.clone()), cancel).await
-                })  // RevExt: 80
+                }) // RevExt: 80
                 .await
             });
         assert_eq!(accepted?.status(), StatusCode::OK);
-// RevExt: 66
+        // RevExt: 66
         let timed_out = dispatch(ExtractState(api), infer(Uuid::now_v7())?).await;
         for (response, status, code) in [
             (cancelled, 499, "CANCELLED"),
@@ -433,7 +436,7 @@ mod tests {
             assert_eq!(response.status(), status);
             let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
             assert_eq!(body["error"]["code"], code);
-        }  // RevExt: 76
+        } // RevExt: 76
         Ok(())
-    }  // RevExt: 72
-}  // RevExt: 67
+    } // RevExt: 72
+} // RevExt: 67

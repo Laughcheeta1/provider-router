@@ -9,13 +9,13 @@ use crate::{
         inference::{InferenceBackend, REQUEST_TIMEOUT},
     },
     domain::{Connection, Model, State},
-};  // RevExt: 1
+}; // RevExt: 1
 
 use super::{
     documents,
     profile::Profile,
     provider::{self, ProviderError},
-};  // RevExt: 2
+}; // RevExt: 2
 
 pub struct LocalInference {
     profile: Profile,
