@@ -1,9 +1,7 @@
 /** Bind the caller's actual answer schema into Codex's one-decision output contract. */
 import { z } from 'zod';
 import { RouterError, type InferenceRequest } from '../../../common/schemas/contracts.ts';
-// RevExt: 1
 export interface CliDecision { content: string; tool_calls: { name: string; arguments: string }[] }
-// RevExt: 2
 /** A structured answer is a JSON value under its real schema, never an unconstrained JSON string. */
 export function cliDecisionSchema(request: InferenceRequest): Record<string, unknown> {
   const choice: InferenceRequest['tool_choice'] = request.tool_choice;
@@ -19,8 +17,7 @@ export function cliDecisionSchema(request: InferenceRequest): Record<string, unk
   }, required: ['kind', 'tool_calls'] });
   if (!alternatives.length) throw new RouterError('INVALID_TOOL_CHOICE', 'The selected tool choice has no available function.');
   return { type: 'object', additionalProperties: false, properties: { decision: { anyOf: alternatives } }, required: ['decision'], ...(request.response_format ? { $defs: { response: embedSchema(request.response_format.json_schema.schema) } } : {}) };
-}  // RevExt: 6
-// RevExt: 3
+}
 /** Normalize a typed decision to API text/tool requests after decoding, not through prompt instructions. */
 export function decodeCliDecision(value: unknown, request: InferenceRequest): CliDecision {
   const envelope: { decision: Record<string, unknown> } = z.object({ decision: z.record(z.string(), z.unknown()) }).strict().parse(value);
@@ -37,8 +34,7 @@ export function decodeCliDecision(value: unknown, request: InferenceRequest): Cl
   }
   const answer: { kind: 'answer'; content: string } = z.object({ kind: z.literal('answer'), content: z.string() }).strict().parse(envelope.decision);
   return { content: answer.content, tool_calls: [] };
-}  // RevExt: 7
-// RevExt: 4
+}
 /** Rebase local references without rewriting literal const/enum/example application data. */
 function embedSchema(value: unknown): unknown {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
@@ -63,10 +59,9 @@ function embedSchema(value: unknown): unknown {
     else embedded[key] = field;
   }
   return embedded;
-}  // RevExt: 8
-// RevExt: 5
+}
 /** Discriminator mappings are schema references too, while const/enum values remain literal data. */
 function rebaseReference(value: string): string {
   if (!value.startsWith('#')) throw new RouterError('UNSUPPORTED_SCHEMA', 'Codex CLI structured output requires local JSON Schema references.');
   return value === '#' ? '#/$defs/response' : value.startsWith('#/') ? `#/$defs/response${value.slice(1)}` : `#provider_router_response_${value.slice(1)}`;
-}  // RevExt: 9
+}

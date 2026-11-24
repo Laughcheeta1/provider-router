@@ -12,7 +12,7 @@ export const modelSchema = z.object({
   input_modalities: z.array(z.string()),
 }).superRefine((model, context): void => {
   if (model.default_reasoning_effort !== null && !model.reasoning_efforts.includes(model.default_reasoning_effort)) context.addIssue({ code: 'custom', message: 'The default thinking effort must be allowed.' });
-});  // RevExt: 1
+});
 export type Model = z.infer<typeof modelSchema>;
 export const methodSchema = z.enum(['codex_cli', 'codex_http', 'openrouter_http']);
 export type Method = z.infer<typeof methodSchema>;
@@ -34,12 +34,12 @@ export type ToolCall = z.infer<typeof toolCallSchema>;
 export const filePartSchema = z.object({
   type: z.literal('file'),
   file: z.object({ filename: z.string().min(1).max(255), file_data: z.string().min(1) }).strict(),
-}).strict();  // RevExt: 3
+}).strict();
 export const messageSchema = z.object({
   role: z.enum(['system', 'developer', 'user', 'assistant', 'tool']),
   content: z.union([z.string(), z.array(jsonObjectSchema), z.null()]),
   tool_calls: z.array(toolCallSchema).optional(), tool_call_id: z.string().optional(), name: z.string().optional(),
-}).strict();  // RevExt: 4
+}).strict();
 export type Message = z.infer<typeof messageSchema>;
 export const toolSchema = z.object({ type: z.literal('function'), function: z.object({ name: z.string().min(1), description: z.string().optional(), parameters: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).strict();
 export type Tool = z.infer<typeof toolSchema>;
@@ -50,13 +50,13 @@ export const inferenceSchema = z.object({
   max_output_tokens: z.number().int().positive().optional(),
   tool_choice: z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), function: z.object({ name: z.string().min(1) }) })]).optional(),
   parallel_tool_calls: z.boolean().optional(),
-}).strict();  // RevExt: 5
+}).strict();
 export type InferenceRequest = z.infer<typeof inferenceSchema>;
 export const resultSchema = z.object({
   request_id: uuidSchema, content: z.string(), tool_calls: z.array(toolCallSchema),
   usage: z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative() }),
   provider: z.enum(['codex', 'openrouter']), method: methodSchema, model: z.string(), reasoning_effort: z.string().optional(),
-});  // RevExt: 2
+});
 export type InferenceResult = z.infer<typeof resultSchema>;
 export interface ProviderDescriptor { id: string; name: string; provider: 'codex' | 'openrouter'; method: Method; models: Model[] }
 export interface ProviderAdapter {

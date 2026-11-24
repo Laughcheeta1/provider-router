@@ -3,7 +3,6 @@ import { existsSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { filePartSchema, RouterError, type Message, type Model } from '../../common/schemas/contracts.ts';
-// RevExt: 1
 export type Part = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 const mimeTypes: Readonly<Record<string, string>> = {
   '.pdf': 'application/pdf',
@@ -12,7 +11,6 @@ const mimeTypes: Readonly<Record<string, string>> = {
   '.txt': 'text/plain', '.md': 'text/markdown', '.markdown': 'text/markdown', '.csv': 'text/csv',
 };
 const mib: number = 1024 * 1024;
-// RevExt: 2
 export async function prepareDocuments(messages: Message[], model: Model, signal: AbortSignal): Promise<Message[]> {
   const result: Message[] = [];
   let files: number = 0;
@@ -27,7 +25,6 @@ export async function prepareDocuments(messages: Message[], model: Model, signal
       result.push(message);
       continue;
     }
-// RevExt: 3
     for (const item of message.content) {
       if (item.type !== 'file') continue;
       signal.throwIfAborted();
@@ -36,7 +33,6 @@ export async function prepareDocuments(messages: Message[], model: Model, signal
       const mime: string | undefined = mimeTypes[extension];
       const prefix: string = `data:${mime};base64,`;
       if (!Object.hasOwn(mimeTypes, extension) || !file.file_data.startsWith(prefix)) throw new RouterError('FILE_TYPE_UNSUPPORTED', 'Use a supported document type and matching media type.');
-// RevExt: 4
       const encoded: string = file.file_data.slice(prefix.length);
       if (++files > 5 || encoded.length > Math.ceil(10 * mib / 3) * 4) throw fileLimit();
       const bytes: Buffer = Buffer.from(encoded, 'base64');
@@ -44,7 +40,6 @@ export async function prepareDocuments(messages: Message[], model: Model, signal
       bytesTotal += bytes.length;
       if (bytes.length > 10 * mib || bytesTotal > 25 * mib) throw fileLimit();
       if (extension === '.pdf' && !vision) throw imageUnsupported();
-// RevExt: 5
       const parts: Part[] = ['.pdf', '.docx', '.xlsx', '.csv'].includes(extension)
         ? await extractDocument(extension, bytes, textLimit - textBytes, signal)
         : decodeText(bytes);
@@ -63,20 +58,17 @@ export async function prepareDocuments(messages: Message[], model: Model, signal
       }
       result.push({ role: 'user', content });
     }
-// RevExt: 6
     const question: Record<string, unknown>[] = message.content.filter((part): boolean => part.type !== 'file');
     if (question.length) result.push({ ...message, content: question });
   }
   return result;
-}  // RevExt: 12
-// RevExt: 7
+}
 function decodeText(bytes: Buffer): Part[] {
   try {
     const text: string = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     return text.trim() && !text.includes('\0') ? [{ type: 'text', text }] : [];
   } catch { throw new RouterError('FILE_UNREADABLE', 'Text attachments must be valid UTF-8.'); }
-}  // RevExt: 13
-// RevExt: 8
+}
 async function extractDocument(extension: string, bytes: Buffer, textBudget: number, signal: AbortSignal): Promise<Part[]> {
   const directory: string = import.meta.dirname;
   const bundled: string = join(directory, 'document-worker.mjs');
@@ -106,16 +98,13 @@ async function extractDocument(extension: string, bytes: Buffer, textBudget: num
     deadline.removeEventListener('abort', cancel);
     await worker.terminate();
   }
-}  // RevExt: 14
-// RevExt: 9
+}
 function contextLimit(): RouterError {
   return new RouterError('FILE_CONTEXT_LIMIT', 'The extracted attachment content is too large. Send fewer files or smaller excerpts.', 413);
-}  // RevExt: 15
-// RevExt: 10
+}
 function fileLimit(): RouterError {
   return new RouterError('FILE_REQUEST_LIMIT', 'Use up to five attachments, 10 MiB each and 25 MiB total.', 413);
-}  // RevExt: 16
-// RevExt: 11
+}
 function imageUnsupported(): RouterError {
   return new RouterError('FILE_IMAGES_UNSUPPORTED', 'Select a model that accepts images to read this attachment.');
-}  // RevExt: 17
+}

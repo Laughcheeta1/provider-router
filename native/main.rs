@@ -20,7 +20,7 @@ struct Cli {
     data_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<commands::Command>,
-} // RevExt: 5
+}
 
 fn main() -> Result<()> {
     if std::env::args_os().len() == 2
@@ -29,9 +29,9 @@ fn main() -> Result<()> {
             .is_some_and(|arg| arg == "--document-worker")
     {
         return documents::worker();
-    } // RevExt: 1
+    }
     application()
-} // RevExt: 6
+}
 
 #[tokio::main]
 async fn application() -> Result<()> {
@@ -41,7 +41,7 @@ async fn application() -> Result<()> {
             std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
             "Open provider-router in an interactive terminal, or run provider-router --help."
         );
-    } // RevExt: 2
+    }
 
     let profile = Profile::open(
         cli.data_dir
@@ -59,7 +59,7 @@ async fn application() -> Result<()> {
         )
     ) {
         supervisor::forward_cli(&profile).await?;
-    } // RevExt: 3
+    }
     match cli.command {
         Some(commands::Command::InternalWorker) => {
             supervisor::serve_worker(|shutdown| {
@@ -69,5 +69,5 @@ async fn application() -> Result<()> {
         }
         Some(command) => commands::execute(profile, command).await,
         None => terminal::run(profile, infrastructure::provider::Catalog::new()?).await,
-    } // RevExt: 4
-} // RevExt: 7
+    }
+}

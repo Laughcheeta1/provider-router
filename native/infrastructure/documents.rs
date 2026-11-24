@@ -1,39 +1,33 @@
 //! Bounded native extraction of inline documents into text and visual input parts.
-// RevExt: 1
 mod office;
 mod pdf;
-// RevExt: 2
 use crate::{
     application::{
         contracts::{Attachment, Content, Image, Message, Part, Role, has_file},
         failure::{Failure, Outcome},
     },
     domain::Model,
-}; // RevExt: 25
+};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{self, Read},
     path::Path,
     process::Stdio,
-}; // RevExt: 26
+};
 use tokio::io::AsyncWriteExt;
-// RevExt: 3
 const MIB: usize = 1024 * 1024;
 const MAX_IMAGE_BUDGET: usize = 12 * MIB;
-// RevExt: 4
 #[derive(Deserialize, Serialize)]
 struct Job {
     messages: Vec<Message>,
     model: Model,
-} // RevExt: 27
-// RevExt: 5
+}
 #[derive(Deserialize, Serialize)]
 enum WorkerReply {
     Processed(Vec<Message>),
     Rejected(String),
-} // RevExt: 28
-// RevExt: 6
+}
 /// A document parser crash or a cancelled job cannot take down the API listener.
 pub(super) async fn extract(messages: Vec<Message>, model: &Model) -> Outcome<Vec<Message>> {
     let executable = std::env::current_exe().map_err(|_| Failure::document())?;
@@ -73,8 +67,7 @@ pub(super) async fn extract(messages: Vec<Message>, model: &Model) -> Outcome<Ve
             _ => Failure::document(),
         }),
     }
-} // RevExt: 29
-// RevExt: 7
+}
 pub(crate) fn worker() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -99,8 +92,7 @@ pub(crate) fn worker() -> anyhow::Result<()> {
     };
     serde_json::to_writer(io::stdout().lock(), &output)?;
     Ok(())
-} // RevExt: 30
-// RevExt: 8
+}
 pub(super) fn prepare(messages: Vec<Message>, model: &Model) -> Outcome<Vec<Message>> {
     let mut result = Vec::new();
     let vision = model.input_modalities.iter().any(|value| value == "image");
@@ -182,8 +174,7 @@ pub(super) fn prepare(messages: Vec<Message>, model: &Model) -> Outcome<Vec<Mess
         }
     }
     Ok(result)
-} // RevExt: 31
-// RevExt: 9
+}
 fn parse_attachment(file: &Attachment) -> Outcome<(String, Vec<u8>)> {
     let extension = Path::new(&file.filename)
         .extension()
@@ -230,8 +221,7 @@ fn parse_attachment(file: &Attachment) -> Outcome<(String, Vec<u8>)> {
         return Err(file_limit());
     }
     Ok((extension, decoded))
-} // RevExt: 32
-// RevExt: 10
+}
 fn read_text(bytes: &[u8]) -> Outcome<&str> {
     let value = std::str::from_utf8(bytes)
         .map_err(|_| Failure::bad("FILE_UNREADABLE", "Text attachments must be valid UTF-8."))?;
@@ -243,43 +233,37 @@ fn read_text(bytes: &[u8]) -> Outcome<&str> {
         ));
     }
     Ok(value)
-} // RevExt: 33
-// RevExt: 11
+}
 fn text(text: String) -> Part {
     Part::Text { text }
-} // RevExt: 34
-// RevExt: 12
+}
 fn image(media_type: &str, bytes: &[u8]) -> Part {
     Part::ImageUrl {
         image_url: Image {
             url: format!("data:{media_type};base64,{}", STANDARD.encode(bytes)),
         },
     }
-} // RevExt: 35
-// RevExt: 13
+}
 fn context_limit() -> Failure {
     Failure::new(
         413,
         "FILE_CONTEXT_LIMIT",
         "The extracted attachment content is too large. Send fewer files or smaller excerpts.",
     )
-} // RevExt: 36
-// RevExt: 14
+}
 fn file_limit() -> Failure {
     Failure::new(
         413,
         "FILE_REQUEST_LIMIT",
         "Use up to five attachments, 10 MiB each and 25 MiB total.",
     )
-} // RevExt: 37
-// RevExt: 15
+}
 fn unsupported_images() -> Failure {
     Failure::bad(
         "FILE_IMAGES_UNSUPPORTED",
         "Select a model that accepts images to read this attachment.",
     )
-} // RevExt: 38
-// RevExt: 16
+}
 /// Reject as soon as a line would expand beyond the extraction budget.
 fn add_line(output: &mut String, line: &str, limit: usize) -> Outcome<()> {
     let newline = usize::from(!output.is_empty());
@@ -291,12 +275,10 @@ fn add_line(output: &mut String, line: &str, limit: usize) -> Outcome<()> {
     }
     output.push_str(line);
     Ok(())
-} // RevExt: 39
-// RevExt: 17
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    // RevExt: 18
     fn fixture(filename: &str, mime: &str, bytes: &[u8], modalities: Vec<String>) -> Vec<Message> {
         let model = Model {
             id: "fixture-model".into(),
@@ -321,14 +303,12 @@ mod tests {
         ]);
         prepare(vec![user], &model).expect("fixture should be readable")
     }
-    // RevExt: 19
     fn parts(messages: &[Message]) -> &[Part] {
         let Content::Parts(parts) = &messages[0].content else {
             panic!("expected attachment parts")
         };
         parts
     }
-    // RevExt: 20
     #[test]
     fn csv_preserves_delimited_cells_and_separates_the_question() {
         let csv = "\u{feff}Código,Consumo,Nota\r\n\"Bogotá, D.C.\",125,\"x|y\r\nz\"\r\n,,\r\n\" \"\"Sur\"\"\",,\r\n";
@@ -348,7 +328,6 @@ mod tests {
         );
         assert!(office::csv(b"\"an unfinished quote", 200).is_err());
     }
-    // RevExt: 21
     #[test]
     fn workbook_preserves_coordinates_cached_values_and_formulas() {
         let messages = fixture(
@@ -385,7 +364,6 @@ mod tests {
         }
         assert!(!text.contains("\n6 |"));
     }
-    // RevExt: 22
     #[test]
     fn word_preserves_table_text_and_embedded_png() {
         let messages = fixture(
@@ -400,7 +378,6 @@ mod tests {
         );
         assert!(parts.iter().any(|part| matches!(part, Part::ImageUrl { image_url } if image_url.url.starts_with("data:image/png;base64,iVBOR"))));
     }
-    // RevExt: 23
     #[test]
     fn pdf_sends_only_page_images_in_order() {
         let messages = fixture(
@@ -433,7 +410,6 @@ mod tests {
             }));
         }
     }
-    // RevExt: 24
     #[test]
     fn document_checks_reject_visual_and_context_mismatches() {
         let model = Model {
@@ -479,4 +455,4 @@ mod tests {
             assert_eq!(error.code, expected);
         }
     }
-} // RevExt: 40
+}

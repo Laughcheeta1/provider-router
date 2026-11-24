@@ -1,12 +1,6 @@
 //! Reuse a signed-in Codex session and commit any rotating grant under Codex's lock.
-use std::collections::HashMap;
-use std::env;
-use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, Weak};
-use std::time::Duration;
-// RevExt: 1
+use super::{bounded_json, failure};
+use crate::domain::Connection;
 use anyhow::{Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
@@ -14,60 +8,56 @@ use reqwest::{Client, Url};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::env;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Instant, sleep};
-// RevExt: 2
-use super::{bounded_json, failure};
-use crate::domain::Connection;
-// RevExt: 3
 const DEFAULT_CLIENT: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const MAX_CREDENTIAL_BYTES: u64 = 2 * 1024 * 1024;
 const REFRESH_MARKER: &str = "provider-router-refresh.json";
 static REFRESH_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<AsyncMutex<()>>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));  // RevExt: 56
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 /// Resolving a WSL credential directory starts a WSL process, so requests reuse a recent result.
 const WSL_HOME_REUSE: Duration = Duration::from_secs(300);
 type WslHomes = HashMap<(String, Option<PathBuf>), (Instant, PathBuf, String)>;
-static WSL_HOMES: LazyLock<Mutex<WslHomes>> = LazyLock::new(|| Mutex::new(HashMap::new()));  // RevExt: 57
-// RevExt: 4
+static WSL_HOMES: LazyLock<Mutex<WslHomes>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 #[derive(Clone)]
 pub(super) struct CredentialHome {
     directory: PathBuf,
     #[cfg(windows)]
     wsl: Option<WslHome>,
-}  // RevExt: 58
-// RevExt: 5
+}
 #[cfg(windows)]
 #[derive(Clone)]
 struct WslHome {
     distribution: String,
     directory: String,
-}  // RevExt: 59
-// RevExt: 6
+}
 #[derive(Eq, PartialEq)]
 struct CredentialFile {
     path: PathBuf,
     #[cfg(windows)]
     linux_path: Option<String>,
-}  // RevExt: 60
-// RevExt: 7
+}
 pub(super) struct Authorization {
     pub access_token: String,
     pub account_id: Option<String>,
-}  // RevExt: 61
-// RevExt: 8
+}
 #[derive(Clone, Copy, PartialEq)]
 enum Backend {
     File,
     Keyring,
-}  // RevExt: 62
-// RevExt: 9
+}
 struct Credentials {
     document: Value,
     backend: Backend,
-}  // RevExt: 63
-// RevExt: 10
+}
 impl Credentials {
     fn new(document: Value, backend: Backend) -> Result<Self> {
         let mode = document.get("auth_mode");
@@ -81,12 +71,10 @@ impl Credentials {
             login_unavailable()
         );
         Ok(Self { document, backend })
-    }  // RevExt: 82
-// RevExt: 11
+    }
     fn access(&self) -> &str {
         self.document["tokens"]["access_token"].as_str().unwrap()
-    }  // RevExt: 83
-// RevExt: 12
+    }
     fn expired(&self) -> bool {
         let claims = self
             .access()
@@ -102,8 +90,7 @@ impl Credentials {
             .as_str()
             .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
             .is_none_or(|last| now.signed_duration_since(last).num_days() >= 7)
-    }  // RevExt: 84
-// RevExt: 13
+    }
     fn generation(&self) -> String {
         let tokens = &self.document["tokens"];
         let identity = json!([
@@ -113,14 +100,12 @@ impl Credentials {
             tokens["login_owner_id"],
         ]);
         format!("{:x}", Sha256::digest(identity.to_string().as_bytes()))
-    }  // RevExt: 85
-// RevExt: 14
+    }
     fn same_account(&self, other: &Credentials) -> bool {
         ["account_id", "login_owner_id", "oauth_provenance"]
             .into_iter()
             .all(|key| self.document["tokens"][key] == other.document["tokens"][key])
-    }  // RevExt: 86
-// RevExt: 15
+    }
     fn authorization(&self) -> Authorization {
         Authorization {
             access_token: self.access().to_owned(),
@@ -128,9 +113,8 @@ impl Credentials {
                 .as_str()
                 .map(str::to_owned),
         }
-    }  // RevExt: 87
-}  // RevExt: 64
-// RevExt: 16
+    }
+}
 impl CredentialHome {
     pub(super) async fn for_connection(connection: &Connection) -> Result<Self> {
         if let Some(distribution) = connection.wsl_distribution.as_deref() {
@@ -147,7 +131,6 @@ impl CredentialHome {
                 }),
             });
         }
-// RevExt: 17
         let directory = connection
             .codex_home
             .clone()
@@ -163,8 +146,7 @@ impl CredentialHome {
             #[cfg(windows)]
             wsl: None,
         })
-    }  // RevExt: 88
-// RevExt: 18
+    }
     pub(super) async fn authorize(
         &self,
         client: &Client,
@@ -174,7 +156,6 @@ impl CredentialHome {
         if !credentials.expired() && rejected != Some(credentials.access()) {
             return Ok(credentials.authorization());
         }
-// RevExt: 19
         // A caller disconnect can cancel inference, but a rotating grant needs a durable commit.
         let home = self.clone();
         let client = client.clone();
@@ -191,11 +172,10 @@ impl CredentialHome {
         })
         .await
         .map_err(|_| refresh_failed())?
-    }  // RevExt: 89
-// RevExt: 20
+    }
     fn refresh_mutex(&self) -> Arc<AsyncMutex<()>> {
         let mut locks = REFRESH_LOCKS
-            .lock()  // RevExt: 113
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         locks.retain(|_, lock| lock.strong_count() != 0);
         let handle = locks.entry(self.directory.clone()).or_default();
@@ -205,8 +185,7 @@ impl CredentialHome {
         let lock = Arc::new(AsyncMutex::new(()));
         *handle = Arc::downgrade(&lock);
         lock
-    }  // RevExt: 90
-// RevExt: 21
+    }
     async fn refresh(&self, client: &Client, expected: Credentials) -> Result<Authorization> {
         let (authority, client_id) = authority(&expected)?;
         let target = self.credential_file().await?;
@@ -249,7 +228,6 @@ impl CredentialHome {
             )
             .map_err(|_| refresh_uncertain())?;
         }
-// RevExt: 22
         let response = client
             .post(authority)
             .timeout(Duration::from_secs(30))
@@ -269,7 +247,6 @@ impl CredentialHome {
             }
             bail!(refresh_failed());
         }
-// RevExt: 23
         #[derive(Deserialize)]
         struct Grant {
             access_token: String,
@@ -289,7 +266,6 @@ impl CredentialHome {
         }
         updated["last_refresh"] = json!(Utc::now().to_rfc3339());
         let replacement = Credentials::new(updated, expected.backend)?;
-// RevExt: 24
         let _lock = self.lock(&target).await?;
         ensure!(
             self.credential_file().await? == target,
@@ -313,15 +289,13 @@ impl CredentialHome {
             let _ = fs::remove_file(marker);
         }
         Ok(replacement.authorization())
-    }  // RevExt: 91
-// RevExt: 25
+    }
     async fn load_async(&self) -> Result<Credentials> {
         let home = self.clone();
         tokio::task::spawn_blocking(move || home.load())
             .await
             .map_err(|_| login_unavailable())?
-    }  // RevExt: 92
-// RevExt: 26
+    }
     fn load(&self) -> Result<Credentials> {
         let settings = self.auth_config()?;
         let backend = settings.get("cli_auth_credentials_store");
@@ -359,8 +333,7 @@ impl CredentialHome {
             .map_err(|_| login_unavailable())?
             .ok_or_else(login_unavailable)?;
         Credentials::new(document, Backend::File)
-    }  // RevExt: 93
-// RevExt: 27
+    }
     fn auth_config(&self) -> Result<toml::Value> {
         let config = self.directory.join("config.toml");
         let data = match read_small(&config) {
@@ -378,8 +351,7 @@ impl CredentialHome {
             .ok()
             .and_then(|text| toml::from_str(text).ok())
             .ok_or_else(unsupported_store)
-    }  // RevExt: 94
-// RevExt: 28
+    }
     fn keyring(&self) -> Result<keyring::Entry> {
         let canonical = self
             .directory
@@ -389,8 +361,7 @@ impl CredentialHome {
         let hash = format!("{:x}", Sha256::digest(canonical.as_bytes()));
         keyring::Entry::new("Codex Auth", &format!("cli|{}", &hash[..16]))
             .map_err(|_| login_unavailable())
-    }  // RevExt: 95
-// RevExt: 29
+    }
     async fn save_async(&self, credentials: &Credentials, target: &Path) -> Result<()> {
         let home = self.clone();
         let document = credentials.document.clone();
@@ -407,8 +378,7 @@ impl CredentialHome {
         })
         .await
         .map_err(|_| refresh_failed())?
-    }  // RevExt: 96
-// RevExt: 30
+    }
     async fn credential_file(&self) -> Result<CredentialFile> {
         #[cfg(windows)]
         if let Some(wsl) = &self.wsl {
@@ -421,7 +391,6 @@ impl CredentialHome {
                 linux_path: Some(linux_path),
             });
         }
-// RevExt: 31
         let path = self.directory.join("auth.json");
         let path = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -436,14 +405,12 @@ impl CredentialHome {
             #[cfg(windows)]
             linux_path: None,
         })
-    }  // RevExt: 97
-// RevExt: 32
+    }
     async fn lock(&self, target: &CredentialFile) -> Result<CredentialLock> {
         #[cfg(windows)]
         if let (Some(wsl), Some(linux_path)) = (&self.wsl, &target.linux_path) {
             return wsl.lock(linux_path).await;
         }
-// RevExt: 33
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
@@ -464,9 +431,8 @@ impl CredentialHome {
                 Err(_) => return Err(storage_locked()),
             }
         }
-    }  // RevExt: 98
-}  // RevExt: 65
-// RevExt: 34
+    }
+}
 enum CredentialLock {
     Native {
         _file: File,
@@ -476,15 +442,13 @@ enum CredentialLock {
         _stdin: tokio::process::ChildStdin,
         _child: tokio::process::Child,
     },
-}  // RevExt: 66
-// RevExt: 35
+}
 #[cfg(windows)]
 impl WslHome {
     async fn lock(&self, linux_path: &str) -> Result<CredentialLock> {
         use std::process::Stdio;
         use tokio::io::AsyncReadExt;
         use tokio::time::timeout;
-// RevExt: 36
         let lock_file = Path::new(linux_path).with_extension("json.lock");
         let lock_file = lock_file.to_string_lossy();
         let mut command = super::discovery::wsl_command(&self.distribution);
@@ -517,26 +481,24 @@ impl WslHome {
             _stdin: stdin,
             _child: child,
         })
-    }  // RevExt: 99
-}  // RevExt: 67
-// RevExt: 37
+    }
+}
 async fn wsl_home(distribution: &str, home: Option<&Path>) -> Result<(PathBuf, String)> {
     let key = (distribution.to_owned(), home.map(Path::to_path_buf));
     let homes = || {
         WSL_HOMES
-            .lock()  // RevExt: 114
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    };  // RevExt: 115
+    };
     if let Some((resolved, windows, linux)) = homes().get(&key)
         && resolved.elapsed() < WSL_HOME_REUSE
-    {  // RevExt: 110
+    {
         return Ok((windows.clone(), linux.clone()));
-    }  // RevExt: 100
+    }
     let (windows, linux) = super::discovery::wsl_realpath(distribution, home).await?;
     homes().insert(key, (Instant::now(), windows.clone(), linux.clone()));
     Ok((windows, linux))
-}  // RevExt: 68
-// RevExt: 38
+}
 fn authority(credentials: &Credentials) -> Result<(Url, String)> {
     let provenance = credentials.document["tokens"].get("oauth_provenance");
     let invalid = || {
@@ -545,13 +507,13 @@ fn authority(credentials: &Credentials) -> Result<(Url, String)> {
             "CODEX_AUTHORITY_UNSUPPORTED",
             "This Codex OAuth authority requires a secure endpoint.",
         )
-    };  // RevExt: 116
+    };
     let Some(provenance) = provenance else {
         return Ok((
             Url::parse(DEFAULT_TOKEN_URL).expect("static OAuth URL"),
             DEFAULT_CLIENT.into(),
         ));
-    };  // RevExt: 117
+    };
     let issuer = provenance["issuer"].as_str().ok_or_else(invalid)?;
     let mut url = Url::parse(issuer).map_err(|_| invalid())?;
     ensure!(
@@ -572,33 +534,30 @@ fn authority(credentials: &Credentials) -> Result<(Url, String)> {
         .filter(|client| !client.is_empty())
         .ok_or_else(invalid)?;
     Ok((url, client.into()))
-}  // RevExt: 69
-// RevExt: 39
+}
 fn read_small(path: &Path) -> io::Result<Option<Vec<u8>>> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
-    };  // RevExt: 118
+    };
     if !file.metadata()?.is_file() {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "expected file"));
-    }  // RevExt: 101
+    }
     let mut bytes = Vec::new();
     (&mut file)
         .take(MAX_CREDENTIAL_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "file too large"));
-    }  // RevExt: 102
+    }
     Ok(Some(bytes))
-}  // RevExt: 70
-// RevExt: 40
+}
 fn read_json(path: &Path) -> io::Result<Option<Value>> {
     read_small(path)?
         .map(|bytes| serde_json::from_slice(&bytes).map_err(io::Error::other))
         .transpose()
-}  // RevExt: 71
-// RevExt: 41
+}
 fn write_private_json(path: &Path, value: &Value) -> io::Result<()> {
     let directory = path
         .parent()
@@ -610,16 +569,15 @@ fn write_private_json(path: &Path, value: &Value) -> io::Result<()> {
     #[cfg(not(windows))]
     temporary.persist(path).map_err(|error| error.error)?;
     #[cfg(windows)]
-    {  // RevExt: 111
+    {
         // std::fs::rename can replace files opened for shared reads on Windows.
         let (file, temporary) = temporary.keep().map_err(|error| error.error)?;
         drop(file);
         let temporary = tempfile::TempPath::try_from_path(temporary)?;
         fs::rename(&temporary, path)?;
-    }  // RevExt: 103
+    }
     Ok(())
-}  // RevExt: 72
-// RevExt: 42
+}
 fn check_replaceable(path: &Path) -> io::Result<()> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() || metadata.permissions().readonly() {
@@ -627,9 +585,9 @@ fn check_replaceable(path: &Path) -> io::Result<()> {
             io::ErrorKind::PermissionDenied,
             "credential file must be writable",
         ));
-    }  // RevExt: 104
+    }
     #[cfg(unix)]
-    {  // RevExt: 112
+    {
         use std::os::unix::fs::MetadataExt;
         if metadata.nlink() != 1 {
             return Err(io::Error::new(
@@ -637,72 +595,63 @@ fn check_replaceable(path: &Path) -> io::Result<()> {
                 "credential file has multiple hard links",
             ));
         }
-    }  // RevExt: 105
+    }
     OpenOptions::new().write(true).open(path)?;
     Ok(())
-}  // RevExt: 73
-// RevExt: 43
+}
 fn login_unavailable() -> anyhow::Error {
     failure(
         401,
         "CODEX_LOGIN_UNAVAILABLE",
         "No readable Codex subscription login was found. Sign in with Codex and try again.",
     )
-}  // RevExt: 74
-// RevExt: 44
+}
 fn unsupported_store() -> anyhow::Error {
     failure(
         400,
         "CODEX_STORAGE_UNSUPPORTED",
         "Choose a supported Codex file or native keyring credential store.",
     )
-}  // RevExt: 75
-// RevExt: 45
+}
 fn refresh_failed() -> anyhow::Error {
     failure(
         401,
         "CODEX_AUTH_EXPIRED",
         "The existing Codex login could not be refreshed. Sign in with Codex and try again.",
     )
-}  // RevExt: 76
-// RevExt: 46
+}
 fn refresh_uncertain() -> anyhow::Error {
     failure(
         409,
         "CODEX_REFRESH_UNCERTAIN",
         "A previous credential refresh did not finish. Sign in with Codex before retrying.",
     )
-}  // RevExt: 77
-// RevExt: 47
+}
 fn storage_locked() -> anyhow::Error {
     failure(
         409,
         "CODEX_STORAGE_LOCKED",
         "The Codex credentials are busy. Try again.",
     )
-}  // RevExt: 78
-// RevExt: 48
+}
 fn account_changed() -> anyhow::Error {
     failure(
         409,
         "CODEX_ACCOUNT_CHANGED",
         "The existing Codex account changed. Try again.",
     )
-}  // RevExt: 79
-// RevExt: 49
+}
 fn credentials_changed() -> anyhow::Error {
     failure(
         409,
         "CODEX_CREDENTIALS_CHANGED",
         "The existing Codex credentials changed before refresh could finish. Try again.",
     )
-}  // RevExt: 80
-// RevExt: 50
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
-// RevExt: 51
     fn session(expires: i64) -> Value {
         let claims = URL_SAFE_NO_PAD.encode(json!({"exp": expires}).to_string());
         json!({
@@ -713,8 +662,7 @@ mod tests {
                 "account_id": "synthetic-account",
             },
         })
-    }  // RevExt: 106
-// RevExt: 52
+    }
     fn home() -> (TempDir, CredentialHome) {
         let directory = tempfile::tempdir().unwrap();
         let home = CredentialHome {
@@ -723,8 +671,7 @@ mod tests {
             wsl: None,
         };
         (directory, home)
-    }  // RevExt: 107
-// RevExt: 53
+    }
     #[tokio::test]
     async fn reads_a_live_credential_without_rewriting_codex_storage() {
         let (_directory, home) = home();
@@ -736,8 +683,7 @@ mod tests {
         assert_eq!(auth.access_token, document["tokens"]["access_token"]);
         assert_eq!(read_json(&auth_file).unwrap(), Some(document));
         assert!(!auth_file.with_extension(REFRESH_MARKER).is_file());
-    }  // RevExt: 108
-// RevExt: 54
+    }
     #[tokio::test]
     async fn refuses_to_replay_an_uncertain_refresh_grant() {
         let (_directory, home) = home();
@@ -756,7 +702,6 @@ mod tests {
             &json!({"generation": Credentials::new(document.clone(), Backend::File).unwrap().generation()}),
         )
         .unwrap();
-// RevExt: 55
         let error = home.authorize(&Client::new(), None).await.err().unwrap();
         assert_eq!(
             error
@@ -769,5 +714,5 @@ mod tests {
         assert!(auth_file.with_extension("json.lock").is_file());
         #[cfg(unix)]
         assert!(home.directory.join("auth.json").is_symlink());
-    }  // RevExt: 109
-}  // RevExt: 81
+    }
+}

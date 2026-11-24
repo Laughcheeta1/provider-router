@@ -7,12 +7,11 @@ import { RouterStore } from '../src/app/products/router/repository/settings/file
 import { ManageUseCase, type SettingsRuntime } from '../src/app/products/router/use-cases/manage/use-case.ts';
 import type { SettingsReply } from '../src/app/products/router/schemas/settings-contract.ts';
 import type { ProviderService } from '../src/app/services/provider-service/service.ts';
-// RevExt: 1
 it('rejects insecure settings before persistence and retains valid settings after a failed restart', async (): Promise<void> => {
   const directory: string = await mkdtemp(path.join(os.tmpdir(), 'router-manage-'));
-  try {  // RevExt: 3
-    const store: RouterStore = await RouterStore.open(directory, { encrypt: Buffer.from, decrypt: (value: Buffer): string => value.toString() });  // RevExt: 5
-    const providers: ProviderService = { checkAttachments: async (): Promise<never> => { throw new Error('unused'); }, infer: async (): Promise<never> => { throw new Error('unused'); }, models: async () => [] };  // RevExt: 7
+  try {
+    const store: RouterStore = await RouterStore.open(directory, { encrypt: Buffer.from, decrypt: (value: Buffer): string => value.toString() });
+    const providers: ProviderService = { checkAttachments: async (): Promise<never> => { throw new Error('unused'); }, infer: async (): Promise<never> => { throw new Error('unused'); }, models: async () => [] };
     const runtime: SettingsRuntime = { endpoint: () => null, error: () => null, distributions: async () => [], discover: async () => [], platform: 'linux', revokeClient: (id: string): Promise<void> => store.revokeClient(id), restart: async (): Promise<never> => { throw new Error('port unavailable'); }, saveStartup: async () => {}, checkUpdates: async () => {} };
     const useCase: ManageUseCase = new ManageUseCase(store, providers, runtime);
     const original: ReturnType<RouterStore['publicState']>['network'] = store.publicState().network;
@@ -28,14 +27,13 @@ it('rejects insecure settings before persistence and retains valid settings afte
     await expect(useCase.execute({ type: 'save_network', network: { ...original, port: 47849 } })).rejects.toThrow('port unavailable');
     expect(store.publicState().network.port).toBe(47849);
     expect((await RouterStore.open(directory, { encrypt: Buffer.from, decrypt: (value: Buffer): string => value.toString() })).publicState().network.port).toBe(47849);
-  } finally { await rm(directory, { recursive: true, force: true }); }  // RevExt: 9
-});  // RevExt: 11
-// RevExt: 2
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 it('returns discovery in settings without persisting or exposing a detected provider', async (): Promise<void> => {
   const directory: string = await mkdtemp(path.join(os.tmpdir(), 'router-discovery-'));
-  try {  // RevExt: 4
-    const store: RouterStore = await RouterStore.open(directory, { encrypt: Buffer.from, decrypt: (value: Buffer): string => value.toString() });  // RevExt: 6
-    const providers: ProviderService = { checkAttachments: async (): Promise<never> => { throw new Error('unused'); }, infer: async (): Promise<never> => { throw new Error('unused'); }, models: async () => [] };  // RevExt: 8
+  try {
+    const store: RouterStore = await RouterStore.open(directory, { encrypt: Buffer.from, decrypt: (value: Buffer): string => value.toString() });
+    const providers: ProviderService = { checkAttachments: async (): Promise<never> => { throw new Error('unused'); }, infer: async (): Promise<never> => { throw new Error('unused'); }, models: async () => [] };
     const runtime: SettingsRuntime = {
       endpoint: () => null, error: () => null, distributions: async () => ['Ubuntu'], platform: 'win32',
       discover: async (distributions: readonly string[]) => distributions.map((distribution: string) => ({ connection: { id: '019a6b00-0000-7000-8000-000000000001', name: 'Codex', method: 'codex_http' as const, environment: 'wsl' as const, wsl_distribution: distribution, exposed: false, models: [] }, status: 'ready' as const, detail: 'Existing Codex login detected.' })),
@@ -45,5 +43,5 @@ it('returns discovery in settings without persisting or exposing a detected prov
     expect(reply).toMatchObject({ ok: true, value: { detected_providers: [{ status: 'ready', connection: { wsl_distribution: 'Ubuntu', exposed: false } }], connections: [] } });
     expect(store.publicState().connections).toEqual([]);
     expect((await RouterStore.open(directory, { encrypt: Buffer.from, decrypt: (value: Buffer): string => value.toString() })).publicState().connections).toEqual([]);
-  } finally { await rm(directory, { recursive: true, force: true }); }  // RevExt: 10
-});  // RevExt: 12
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

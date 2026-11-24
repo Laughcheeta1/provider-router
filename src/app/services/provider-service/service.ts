@@ -16,17 +16,15 @@ export class ConfiguredProviderService implements ProviderService {
       usage: { input_tokens: 0, output_tokens: 0 }, method: connection.method,
       provider: connection.method === 'openrouter_http' ? 'openrouter' : 'codex', model: input.model,
     };
-  }  // RevExt: 1
-// RevExt: 4
+  }
   async infer(input: InferenceRequest, connection: Connection, signal: AbortSignal): Promise<InferenceResult> {
     const messages: InferenceRequest['messages'] = await this.prepare(input, connection, signal);
     signal.throwIfAborted();
     return this.adapters[connection.method].infer({ ...input, messages }, connection, signal);
-  }  // RevExt: 2
+  }
   models(connection: Connection, signal: AbortSignal): Promise<Model[]> { return this.adapters[connection.method].models(connection, signal); }
-// RevExt: 5
   private prepare(input: InferenceRequest, connection: Connection, signal: AbortSignal): Promise<InferenceRequest['messages']> {
     const model: Model = connection.models.find((entry: Model): boolean => entry.id === input.model)!;
     return prepareDocuments(input.messages, model, signal);
-  }  // RevExt: 3
+  }
 }

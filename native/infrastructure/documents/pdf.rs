@@ -1,5 +1,4 @@
 //! Render PDF pages as JPEGs for models with image input.
-// RevExt: 1
 use super::{Failure, Outcome, Part, context_limit, image};
 use hayro::{
     PixmapSettings, RenderCache, RenderSettings,
@@ -8,13 +7,12 @@ use hayro::{
     vello_cpu::color::palette::css::WHITE,
 };
 use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
-// RevExt: 2
 pub(super) fn render(bytes: Vec<u8>, image_budget: usize) -> Outcome<Vec<Part>> {
     let pdf = Pdf::new(bytes).map_err(|_| Failure::document())?;
     let pages = pdf.pages();
     if pages.len() > 20 {
         return Err(context_limit());
-    }  // RevExt: 4
+    }
     // Pages render independently. A few threads keep the document worker within its memory limit.
     let workers = std::thread::available_parallelism()
         .map_or(1, |count| count.get())
@@ -34,18 +32,18 @@ pub(super) fn render(bytes: Vec<u8>, image_budget: usize) -> Outcome<Vec<Part>> 
                         .map(|page| encode(page, &cache, &interpreter, &settings))
                         .collect::<Vec<_>>()
                 })
-            })  // RevExt: 8
-            .collect();  // RevExt: 10
+            })
+            .collect();
         let mut rendered: Vec<_> = threads
             .into_iter()
             .map(|thread| thread.join().unwrap_or_default().into_iter())
-            .collect();  // RevExt: 11
+            .collect();
         (0..pages.len())
             .map(|index| {
                 rendered[index % workers]
                     .next()
                     .unwrap_or_else(|| Err(Failure::document()))
-            })  // RevExt: 9
+            })
             .collect()
     });
     let mut parts = Vec::new();
@@ -57,13 +55,12 @@ pub(super) fn render(bytes: Vec<u8>, image_budget: usize) -> Outcome<Vec<Part>> 
             return Err(context_limit());
         }
         parts.push(image("image/jpeg", &jpeg));
-    }  // RevExt: 5
+    }
     if parts.is_empty() {
-        return Err(Failure::document());  // RevExt: 12
-    }  // RevExt: 6
+        return Err(Failure::document());
+    }
     Ok(parts)
-}  // RevExt: 14
-// RevExt: 3
+}
 fn encode<'a>(
     page: &'a Page<'a>,
     cache: &RenderCache<'a>,
@@ -73,8 +70,8 @@ fn encode<'a>(
     let (width, height) = page.render_dimensions();
     let scale = (1600.0 / width.max(height)).min(2.0);
     if !width.is_finite() || !height.is_finite() || width * scale < 1.0 || height * scale < 1.0 {
-        return Err(Failure::document());  // RevExt: 13
-    }  // RevExt: 7
+        return Err(Failure::document());
+    }
     let bitmap = hayro::render(
         page,
         cache,
@@ -103,4 +100,4 @@ fn encode<'a>(
         )
         .map_err(|_| Failure::document())?;
     Ok(jpeg)
-}  // RevExt: 15
+}

@@ -1,14 +1,4 @@
 //! Register the native executable with the account's startup service.
-// RevExt: 1
-use std::env;
-use std::path::Path;
-#[cfg(any(target_os = "linux", windows))]
-use std::process::Command;
-#[cfg(unix)]
-use std::{fs, io};
-// RevExt: 2
-use anyhow::{Context, Result};
-// RevExt: 3
 #[cfg(unix)]
 use super::profile::write_private;
 use super::{
@@ -16,17 +6,21 @@ use super::{
     profile::{Profile, digest},
 };
 use crate::{application::management, domain::StartupMode};
-// RevExt: 4
+use anyhow::{Context, Result};
+use std::env;
+use std::path::Path;
+#[cfg(any(target_os = "linux", windows))]
+use std::process::Command;
+#[cfg(unix)]
+use std::{fs, io};
 pub fn set_mode(profile: &Profile, mode: StartupMode) -> Result<()> {
     management::set_startup(profile, mode, |enable| {
         configure(profile, &installation_executable()?, enable)
     })
-} // RevExt: 15
-// RevExt: 5
+}
 pub fn register_if_enabled(profile: &Profile) -> Result<()> {
     register_if_enabled_at(profile, &installation_executable()?)
-} // RevExt: 16
-// RevExt: 6
+}
 pub fn register_if_enabled_at(profile: &Profile, executable: &Path) -> Result<()> {
     management::register_startup_if_enabled(profile, |enable| {
         configure(profile, executable, enable)
@@ -49,12 +43,10 @@ fn configure(profile: &Profile, executable: &Path, enable: bool) -> Result<()> {
         .to_str()
         .context("Startup requires a Unicode executable path.")?;
     register(&name, &[exe, "--data-dir", path, "__serve", "boot"], enable)
-} // RevExt: 17
-// RevExt: 7
+}
 #[cfg(target_os = "linux")]
 fn register(name: &str, args: &[&str], enable: bool) -> Result<()> {
     use std::os::unix::fs::symlink;
-    // RevExt: 8
     let directory = dirs::config_dir()
         .context("Could not locate user configuration.")?
         .join("systemd/user");
@@ -96,8 +88,7 @@ fn register(name: &str, args: &[&str], enable: bool) -> Result<()> {
         .args(["--user", "daemon-reload"])
         .output();
     Ok(())
-} // RevExt: 18
-// RevExt: 9
+}
 #[cfg(target_os = "linux")]
 fn systemd_quote(value: &str) -> String {
     // systemd ExecStart arguments are quoted individually and specifiers must be escaped.
@@ -111,8 +102,7 @@ fn systemd_quote(value: &str) -> String {
             .replace('\r', "\\r")
             .replace('\t', "\\t")
     )
-} // RevExt: 19
-// RevExt: 10
+}
 #[cfg(target_os = "macos")]
 fn register(name: &str, args: &[&str], enable: bool) -> Result<()> {
     let directory = dirs::home_dir()
@@ -143,15 +133,13 @@ fn register(name: &str, args: &[&str], enable: bool) -> Result<()> {
 <key>EnvironmentVariables</key><dict>{environment}</dict><key>RunAtLoad</key><true/></dict></plist>"#
     );
     write_private(&path, plist.as_bytes())
-} // RevExt: 20
-// RevExt: 11
+}
 #[cfg(target_os = "macos")]
 fn xml(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-} // RevExt: 21
-// RevExt: 12
+}
 #[cfg(windows)]
 fn register(name: &str, args: &[&str], enable: bool) -> Result<()> {
     let run = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -191,17 +179,15 @@ fn register(name: &str, args: &[&str], enable: bool) -> Result<()> {
         "Could not change the Windows startup registration."
     );
     Ok(())
-} // RevExt: 22
-// RevExt: 13
+}
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn register(_: &str, _: &[&str], _: bool) -> Result<()> {
     anyhow::bail!("Startup registration is unavailable on this platform.")
-} // RevExt: 23
-// RevExt: 14
+}
 #[cfg(unix)]
 fn remove_if_present(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         result => Ok(result?),
     }
-} // RevExt: 24
+}

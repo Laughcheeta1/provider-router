@@ -31,12 +31,12 @@ export class RouterStore implements RouterRepository {
       // Retain connection identities and grants while retiring CLI inference.
       migrated = state.connections.some((_connection: Connection, index: number): boolean =>
         (stored as { connections: { method: string }[] }).connections[index]?.method === 'codex_cli');
-    }  // RevExt: 1
+    }
     catch (error: unknown) {
       if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw new RouterError('SETTINGS_INVALID', 'The local configuration could not be read. Restore or repair it before starting.', 500);
       state = stateSchema.parse({ version: 1, instance_id: uuid7(), connections: [], clients: [], secrets: {}, network: {} });
       migrated = persistNew;
-    }  // RevExt: 2
+    }
     const store: RouterStore = new RouterStore(file, cipher, state);
     if (migrated) await store.update((): void => {});
     return store;

@@ -24,7 +24,7 @@ export class ManageUseCase {
       const distributions: string[] = await this.runtime.distributions();
       const detected: DetectedProvider[] = await this.runtime.discover(distributions);
       return { ok: true, value: { ...this.status(), wsl_distributions: distributions, platform: this.runtime.platform, detected_providers: detected } satisfies SettingsSnapshot };
-    }  // RevExt: 1
+    }
     if (command.type === 'save_connection') { await this.repository.saveConnection(command.connection, command.api_key); return { ok: true, value: null }; }
     if (command.type === 'remove_connection') { await this.repository.removeConnection(command.id); return { ok: true, value: null }; }
     if (command.type === 'refresh_models') {
@@ -32,7 +32,7 @@ export class ManageUseCase {
       if (!connection) throw new RouterError('CONNECTION_UNAVAILABLE', 'This connection no longer exists.', 404);
       const models: Model[] = await this.providers.models(connection, AbortSignal.timeout(30_000));
       return { ok: true, value: models };
-    }  // RevExt: 2
+    }
     if (command.type === 'create_client') return { ok: true, value: await this.repository.createClient(command.name) };
     if (command.type === 'revoke_client') { await this.runtime.revokeClient(command.id); return { ok: true, value: null }; }
     if (command.type === 'save_network') { validateNetwork(command.network); await this.repository.saveNetwork(command.network); await this.runtime.restart(); return { ok: true, value: null }; }

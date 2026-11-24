@@ -10,8 +10,6 @@ import { ControlClient } from './runtime/control-client.ts';
 import { createCredentialVault, isLegacySecret } from './runtime/credential-vault.ts';
 import type { LaunchCommand } from './runtime/launch.ts';
 import { defaultDataDirectory, lockProfile, openProfile, type RouterProfile } from './runtime/profile.ts';
-// RevExt: 4
-// RevExt: 5
 app.setName('Provider Router');
 app.setAppUserModelId('org.providerrouter.desktop');
 const background: boolean = process.argv.includes('--background');
@@ -47,8 +45,7 @@ async function showSettings(): Promise<void> {
   window.on('closed', (): void => { window = null; });
   await attachView();
   if (!quitting) await window?.loadFile(renderer);
-}  // RevExt: 1
-// RevExt: 6
+}
 async function attachView(): Promise<void> {
   if (view || !control) return;
   const session: AbortController = new AbortController();
@@ -59,9 +56,7 @@ async function attachView(): Promise<void> {
   } catch {
     if (view === session) view = undefined;
   }
-}  // RevExt: 2
-// RevExt: 7
-// RevExt: 8
+}
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', (): void => { if (control) void showSettings(); });
@@ -102,7 +97,7 @@ else {
       await showSettings();
     }
   }).catch((): void => { dialog.showErrorBox('Provider Router could not start', 'The local configuration could not be opened. Repair it before restarting.'); app.quit(); });
-}  // RevExt: 3
+}
 
 function releaseView(): void {
   view?.abort();

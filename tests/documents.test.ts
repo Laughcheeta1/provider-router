@@ -5,11 +5,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Message, Model } from '../src/app/common/schemas/contracts.ts';
 import { prepareDocuments } from '../src/app/services/provider-service/documents.ts';
-// RevExt: 1
 const model: Model = { id: 'vision', name: 'Vision test model', reasoning_efforts: [], default_reasoning_effort: null,
   context_window: 128_000, max_output_tokens: 4_000, tools: true, structured_output: true, input_modalities: ['text', 'image'] };
 const fixtures: string = join(import.meta.dirname, 'fixtures');
-// RevExt: 2
 async function extract(filename: string, mime: string, bytes: Buffer, selected: Model = model): Promise<Message[]> {
   const input: Message[] = [{ role: 'user', content: [
     { type: 'text', text: 'What does this say?' },
@@ -17,7 +15,6 @@ async function extract(filename: string, mime: string, bytes: Buffer, selected: 
   ] }];
   return prepareDocuments(input, selected, new AbortController().signal);
 }
-// RevExt: 3
 describe('attachment messages', () => {
   it.each([['txt', 'text/plain'], ['md', 'text/markdown'], ['markdown', 'text/markdown']])(
     'preserves the complete UTF-8 %s separately from the question',
@@ -33,26 +30,24 @@ describe('attachment messages', () => {
   it('formats CSV records as a grid with quoted commas, blank fields, and embedded delimiters', async (): Promise<void> => {
     const csv: string = '\uFEFFCódigo,Consumo,Nota\r\n"Bogotá, D.C.",125,"x|y\r\nz"\r\n,,\r\n" ""Sur""",,\r\n';
     const [attachment, question] = await extract('dispatch.csv', 'text/csv', Buffer.from(csv));
-    expect(attachment?.content).toEqual([  // RevExt: 18
+    expect(attachment?.content).toEqual([
       { type: 'text', text: expect.stringContaining('dispatch.csv') },
       { type: 'text', text: 'Row | A | B | C\n1 | Código | Consumo | Nota\n2 | Bogotá, D.C. | 125 | "x\\u007cy\\r\\nz"\n3 |  |  | \n4 | " \\"Sur\\"" |  | ' },
-    ]);  // RevExt: 20
+    ]);
     expect(question?.content).toEqual([{ type: 'text', text: 'What does this say?' }]);
     await expect(extract('bad.csv', 'text/csv', Buffer.from('one,"unfinished'))).rejects.toMatchObject({ code: 'FILE_UNREADABLE' });
     await expect(extract('big.csv', 'text/csv', Buffer.from('name,value\n'.repeat(20_000)))).rejects.toMatchObject({ code: 'FILE_CONTEXT_LIMIT' });
-  }, 15_000);  // RevExt: 22
-// RevExt: 17
-// RevExt: 4
+  }, 15_000);
   it('passes a rendered chart and a rotated scan, including a page without a text layer', async (): Promise<void> => {
     const [attachment] = await extract('report.pdf', 'application/pdf', await readFile(join(fixtures, 'attachment-layout.pdf')));
-    expect(attachment?.content).toEqual([  // RevExt: 19
+    expect(attachment?.content).toEqual([
       { type: 'text', text: expect.stringContaining('report.pdf') },
       { type: 'text', text: expect.stringMatching(/Page 1[\s\S]*Dispatch matrix[\s\S]*125 MWh/) },
       { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/jpeg;base64,\/9j\//) } },
       { type: 'text', text: 'Page 2\n' },
       { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/jpeg;base64,\/9j\//) } },
-    ]);  // RevExt: 21
-    const parts = attachment?.content;  // RevExt: 23
+    ]);
+    const parts = attachment?.content;
     if (!Array.isArray(parts)) throw new Error('Expected multipart attachment');
     for (const index of [2, 4]) {
       const { url } = parts[index]?.image_url as { url: string };
@@ -65,8 +60,7 @@ describe('attachment messages', () => {
       expect(pixels.some((green: number, offset: number): boolean =>
         offset % 4 === 1 && green > 80 && green > pixels[offset - 1]! + 50 && green > pixels[offset + 1]! + 50)).toBe(true);
     }
-  }, 15_000);  // RevExt: 11
-// RevExt: 5
+  }, 15_000);
   it('keeps the Word table and its embedded image', async (): Promise<void> => {
     const mime: string = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     const [attachment] = await extract('notes.docx', mime, await readFile(join(fixtures, 'attachment-word.docx')));
@@ -74,13 +68,12 @@ describe('attachment messages', () => {
       { type: 'text', text: expect.stringMatching(/Dispatch notes[\s\S]*North 125 MWh/) },
       { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/png;base64,iVBOR/) } },
     ]));
-  }, 15_000);  // RevExt: 12
-// RevExt: 6
+  }, 15_000);
   it('preserves sheet names, sparse cell coordinates and formula expressions', async (): Promise<void> => {
     const mime: string = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     const [attachment] = await extract('measurements.xlsx', mime, await readFile(join(fixtures, 'attachment-workbook.xlsx')));
-    const parts = attachment?.content;  // RevExt: 24
-    if (!Array.isArray(parts)) throw new Error('Expected workbook message');  // RevExt: 26
+    const parts = attachment?.content;
+    if (!Array.isArray(parts)) throw new Error('Expected workbook message');
     const text: string = String(parts[1]?.text);
     expect(text.split('\n')).toEqual(expect.arrayContaining([
       'Sheet: Dispatch', 'Row | A | B | C | D | E | F | G',
@@ -91,17 +84,15 @@ describe('attachment messages', () => {
       'Sheet: Notes', 'Row | A | XFD', '1 | Net generation | ', '20 |  | Far column',
     ]));
     expect(text).not.toContain('\n6 |');
-  }, 15_000);  // RevExt: 13
-// RevExt: 7
+  }, 15_000);
   it('reports corrupt originals and image incompatibility before provider inference', async (): Promise<void> => {
     await expect(extract('report.pdf', 'application/pdf', Buffer.from('not a PDF'))).rejects.toMatchObject({ code: 'FILE_UNREADABLE' });
     await expect(extract('report.pdf', 'application/pdf', Buffer.from('stub'), { ...model, input_modalities: ['text'] })).rejects.toMatchObject({ code: 'FILE_IMAGES_UNSUPPORTED' });
     await expect(extract('bogus.exe', 'text/plain', Buffer.from('example'))).rejects.toMatchObject({ code: 'FILE_TYPE_UNSUPPORTED' });
     await expect(extract('notes.txt', 'text/plain', Buffer.from('a'.repeat(10 * 1024 * 1024 + 1)))).rejects.toMatchObject({ code: 'FILE_REQUEST_LIMIT' });
     await expect(extract('notes.txt', 'text/plain', Buffer.alloc(model.context_window + 1, 97))).rejects.toMatchObject({ code: 'FILE_CONTEXT_LIMIT' });
-  }, 15_000);  // RevExt: 14
+  }, 15_000);
 });
-// RevExt: 8
 const publicFixtures: string | undefined = process.env.PROVIDER_ROUTER_PUBLIC_FIXTURES;
 describe.skipIf(!publicFixtures)('official company documents', () => {
   it.each([
@@ -114,19 +105,17 @@ describe.skipIf(!publicFixtures)('official company documents', () => {
     expect(JSON.stringify(attachment)).toMatch(sample);
     expect(Array.isArray(attachment?.content) && attachment.content.filter((part): boolean => part.type === 'image_url')).toHaveLength(pages);
   }, 40_000);
-// RevExt: 9
   it('rejects a full long PDF cleanly without dropping its remaining pages', async (): Promise<void> => {
     const file: Buffer = await readFile(join(publicFixtures!, 'isa.pdf'));
     await expect(extract('isa.pdf', 'application/pdf', file)).rejects.toMatchObject({ code: 'FILE_CONTEXT_LIMIT' });
-  }, 15_000);  // RevExt: 15
-// RevExt: 10
+  }, 15_000);
   it('extracts the original smaller XM payment workbook as a numbered grid', async (): Promise<void> => {
     const mime: string = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     const filename: string = 'xm-payment-template.xlsx';
     const [attachment] = await extract(filename, mime, await readFile(join(publicFixtures!, filename)));
-    const parts = attachment?.content;  // RevExt: 25
-    if (!Array.isArray(parts)) throw new Error('Expected workbook message');  // RevExt: 27
+    const parts = attachment?.content;
+    if (!Array.isArray(parts)) throw new Error('Expected workbook message');
     expect(parts[1]?.text).toMatch(/Sheet: Hoja1\nRow \| A \| B[^\n]*\n2 \| \|? ?.*FORMATO SOLICITUD/);
     expect(parts[1]?.text).toContain('DATOS DEL COMERCIALIZADOR SOLICITANTE');
-  }, 15_000);  // RevExt: 16
+  }, 15_000);
 });
