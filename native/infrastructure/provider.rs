@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 // RevExt: 3
 use crate::{
     application::management::{self, SettingsRepository},
-    domain::{Connection, Method, Model},
+    domain::{Connection, Method, Model, hidden_codex_model},
 };
 // RevExt: 4
 pub use discovery::discover;
@@ -578,7 +578,7 @@ struct CodexModel {
 // RevExt: 37
 fn codex_model(entry: CodexModel) -> Option<Model> {
     let context = entry.context_window.filter(|maximum| *maximum > 0)?;
-    if entry.slug.is_empty() || entry.slug == "gpt-reserve" {
+    if entry.slug.is_empty() || hidden_codex_model(&entry.slug) {
         return None;
     }  // RevExt: 123
     let efforts: Vec<String> = entry
@@ -717,6 +717,18 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_catalog_skips_internal_models() {
+        let catalog: CodexCatalog = serde_json::from_value(json!({"models": [
+            {"slug": "gpt-6-sol", "display_name": "GPT-6-Sol", "context_window": 272000},
+            {"slug": "codex-auto-review", "display_name": "Codex Auto Review", "context_window": 272000},
+            {"slug": "gpt-reserve", "display_name": "GPT-Reserve", "context_window": 32000}
+        ]}))
+        .unwrap();
+        let ids: Vec<String> = catalog.models.into_iter().filter_map(codex_model).map(|model| model.id).collect();
+        assert_eq!(ids, ["gpt-6-sol"]);
+    }
 // RevExt: 45
     #[test]  // RevExt: 162
     fn codex_stream_preserves_split_unicode_and_rejects_incomplete_completion() {

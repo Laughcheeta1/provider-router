@@ -62,6 +62,25 @@ impl Default for Network {
 }  // RevExt: 160
 // RevExt: 9
 impl Network {
+    /// Rewrite each approved origin to its exact form, such as `https://app.example.com/` to
+    /// `https://app.example.com`, drop repeats, and validate the result.
+    pub fn normalize(&mut self) -> Result<()> {
+        for origin in &mut self.browser_origins {
+            if let Ok(url) = url::Url::parse(origin.trim())
+                && url.path() == "/"
+                && url.query().is_none()
+                && url.fragment().is_none()
+                && url.username().is_empty()
+                && url.password().is_none()
+            {
+                *origin = url.origin().ascii_serialization();
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        self.browser_origins.retain(|origin| seen.insert(origin.clone()));
+        self.validate()
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(  // RevExt: 189
   // RevExt: 171
@@ -81,7 +100,7 @@ impl Network {
   // RevExt: 181
                 url.origin().ascii_serialization() == *origin
                     && (url.scheme() == "https" || url.scheme() == "http" && loopback),
-                "Use an exact HTTPS website origin or a local HTTP origin, without a trailing slash."
+                "Use an HTTPS website origin or a local HTTP origin, such as https://app.example.com."
             );  // RevExt: 184
         }  // RevExt: 42
         Ok(())  // RevExt: 77
@@ -144,6 +163,11 @@ pub struct Model {
     pub input_modalities: Vec<String>,
 }  // RevExt: 164
 // RevExt: 13
+/// Codex catalog entries that are internal to Codex and never offered to clients.
+pub fn hidden_codex_model(id: &str) -> bool {
+    matches!(id, "gpt-reserve" | "codex-auto-review")
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Connection {
     pub id: Uuid,
@@ -197,7 +221,7 @@ impl Connection {
             );  // RevExt: 185
         }  // RevExt: 49
         self.models
-            .retain(|model| self.method != Method::Codex || model.id != "gpt-reserve");
+            .retain(|model| self.method != Method::Codex || !hidden_codex_model(&model.id));
         for model in &self.models {
             ensure!(  // RevExt: 196
   // RevExt: 183
@@ -273,6 +297,30 @@ mod tests {
     }  // RevExt: 209
 // RevExt: 205
     #[test]  // RevExt: 213
+    fn origins_are_saved_in_their_exact_form() {
+        let mut network = Network {
+            browser_origins: vec![
+                "https://App.Example.com/".into(),
+                "http://localhost:5173/".into(),
+                "https://app.example.com".into(),
+            ],
+            ..Network::default()
+        };
+        network.normalize().unwrap();
+        assert_eq!(
+            network.browser_origins,
+            ["https://app.example.com", "http://localhost:5173"]
+        );
+        for rejected in ["https://app.example.com/login", "http://app.example.com", "app.example.com"] {
+            let mut network = Network {
+                browser_origins: vec![rejected.into()],
+                ..Network::default()
+            };
+            assert!(network.normalize().is_err(), "{rejected}");
+        }
+    }
+
+    #[test]
     fn existing_network_settings_load_with_the_bridge_disabled() {
         let old = serde_json::json!({
             "host": "::1",

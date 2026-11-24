@@ -109,7 +109,7 @@ impl Profile {
             let network = &mut state.network;
             let previous_bridge_host = network.container_bridge_host;
             change(network);
-            network.validate()?;
+            network.normalize()?;
             if validate_bridge_host || network.container_bridge_host != previous_bridge_host {
                 super::network::container_bridge_address(network)?;
             }  // RevExt: 104
