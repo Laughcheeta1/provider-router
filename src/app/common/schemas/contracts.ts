@@ -46,11 +46,14 @@ const continuationSchema = z.object({
   ]),
 }).strict();
 export type Continuation = z.infer<typeof continuationSchema>;
+const undefinedIfNull = <T>(value: T | null): T | undefined => value ?? undefined;
 export const messageSchema = z.object({
   role: z.enum(['system', 'developer', 'user', 'assistant', 'tool']),
   content: z.union([z.string(), z.array(jsonObjectSchema), z.null()]),
-  tool_calls: z.array(toolCallSchema).optional(), tool_call_id: z.string().optional(), name: z.string().optional(),
-  continuation: continuationSchema.nullable().transform((value: Continuation | null): Continuation | undefined => value ?? undefined).optional(),
+  tool_calls: z.array(toolCallSchema).nullable().transform(undefinedIfNull).optional(),
+  tool_call_id: z.string().nullable().transform(undefinedIfNull).optional(),
+  name: z.string().nullable().transform(undefinedIfNull).optional(),
+  continuation: continuationSchema.nullable().transform(undefinedIfNull).optional(),
 }).strict();
 export type Message = z.infer<typeof messageSchema>;
 export const toolSchema = z.object({ type: z.literal('function'), function: z.object({ name: z.string().min(1), description: z.string().optional(), parameters: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).strict();

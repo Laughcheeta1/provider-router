@@ -40,11 +40,11 @@ export class OpenRouterAdapter implements ProviderAdapter {
       ...(request.parallel_tool_calls !== undefined ? { parallel_tool_calls: request.parallel_tool_calls } : {}),
     };
     const headers: Record<string, string> = this.headers(connection);
-    const response: Response = await this.fetcher(`${this.base}/chat/completions`, { method: 'POST', redirect: 'error', headers: { ...headers, 'X-OpenRouter-Metadata': 'enabled' }, body: JSON.stringify(payload), signal });
+    const response: Response = await providerTransport(this.fetcher(`${this.base}/chat/completions`, { method: 'POST', redirect: 'error', headers: { ...headers, 'X-OpenRouter-Metadata': 'enabled' }, body: JSON.stringify(payload), signal }), signal);
     requireSuccess(response);
-    const decoded: OpenRouterCompletion = chatDecoder.parse(await providerJson(response));
+    const decoded: OpenRouterCompletion = await openRouterCompletion(response, signal);
     const choice: OpenRouterCompletion['choices'][number] = decoded.choices[0]!;
-    if (choice.finish_reason !== 'stop' && choice.finish_reason !== 'tool_calls') throw new RouterError('INCOMPLETE_COMPLETION', 'The provider did not finish the response.', 502);
+    if (choice.finish_reason !== 'stop' && choice.finish_reason !== 'tool_calls') throw incomplete();
     const { reasoning_details, reasoning, content, tool_calls } = choice.message;
     let continuation: Continuation | undefined;
     if (decoded.model != null && (reasoning_details != null || reasoning != null)) {
@@ -78,7 +78,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
     try {
       const response: Response = await this.fetcher(`${this.base}/models/${author}/${name}/endpoints`, { headers, redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(3000)]) });
       requireSuccess(response);
-      const catalog: unknown = await providerJson(response);
+      const catalog: unknown = await providerJson(response, signal);
       const endpoints: unknown = object(object(catalog)?.data)?.endpoints;
       if (!Array.isArray(endpoints)) return undefined;
       const tags: Set<string> = new Set();
@@ -94,7 +94,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
   }
 
   async models(connection: Connection, signal: AbortSignal): Promise<Model[]> {
-    const response: Response = await this.fetcher(`${this.base}/models`, { headers: this.headers(connection), redirect: 'error', signal });
+    const response: Response = await providerTransport(this.fetcher(`${this.base}/models`, { headers: this.headers(connection), redirect: 'error', signal }), signal);
     requireSuccess(response);
     const catalog = z.object({ data: z.array(z.object({ architecture: z.object({ input_modalities: z.array(z.string()) }).optional(), id: z.string(), name: z.string(), context_length: z.number().int().positive(), top_provider: z.object({ max_completion_tokens: z.number().int().positive().nullable() }), supported_parameters: z.array(z.string()).default([]), reasoning: z.object({ supported_efforts: z.array(z.string()).nullable().optional(), default_effort: z.string().nullable().optional(), mandatory: z.boolean().optional() }).optional() })) }).parse(await response.json());
     return catalog.data.map((entry): Model => ({
@@ -153,16 +153,17 @@ export class CodexHttpAdapter implements ProviderAdapter {
     const headers: Record<string, string> = request.session_id ? { 'session-id': request.session_id } : {};
     const response: Response = await this.request(connection, '/responses', { method: 'POST', body: JSON.stringify(payload), headers, signal });
     const completed: Record<string, unknown> = await completedResponse(response, signal);
-    const decoded: z.infer<typeof codexOutputSchema> = codexOutputSchema.parse(completed);
+    if (completed.status !== 'completed') throw incomplete();
+    const decoded: z.infer<typeof codexOutputSchema> = decodeProviderResponse(codexOutputSchema, completed);
     const calls: ToolCall[] = [];
     const texts: string[] = [];
     for (const item of decoded.output) {
       const type: unknown = object(item)?.type;
       if (type === 'function_call') {
-        const call = z.object({ call_id: z.string(), name: z.string(), arguments: z.string() }).parse(item);
+        const call: { call_id: string; name: string; arguments: string } = decodeProviderResponse(z.object({ call_id: z.string(), name: z.string(), arguments: z.string() }), item);
         calls.push({ id: call.call_id, type: 'function', function: { name: call.name, arguments: call.arguments } });
       } else if (type === 'message') {
-        const message = z.object({ content: z.array(z.object({ type: z.string(), text: z.string().optional() })) }).parse(item);
+        const message: { content: { type: string; text?: string }[] } = decodeProviderResponse(z.object({ content: z.array(z.object({ type: z.string(), text: z.string().optional() })) }), item);
         for (const part of message.content) { if (part.type === 'output_text' && part.text) texts.push(part.text); if (part.type === 'refusal') throw new RouterError('PROVIDER_REFUSAL', 'The provider declined this request.', 422); }
       } else if (type !== 'reasoning') throw new RouterError('UNSUPPORTED_PROVIDER_OUTPUT', 'The subscription returned an unsupported output item.', 502);
     }
@@ -188,8 +189,8 @@ export class CodexHttpAdapter implements ProviderAdapter {
     if (!auth) { auth = this.authFactory(home); this.accounts.set(home, auth); }
     for (const force of [false, true]) {
       init.signal?.throwIfAborted();
-      const response: Response = await this.fetcher(`${this.base}${route}`, { ...init, redirect: 'error', headers: { ...await auth.headers(force), 'Content-Type': 'application/json', Accept: 'text/event-stream', 'OpenAI-Beta': 'responses=experimental', originator: 'provider_router', 'User-Agent': 'provider-router/0.1.0', ...init.headers } });
-      if (response.status === 401 && !force) { await response.body?.cancel(); continue; }
+      const response: Response = await providerTransport(this.fetcher(`${this.base}${route}`, { ...init, redirect: 'error', headers: { ...await auth.headers(force), 'Content-Type': 'application/json', Accept: 'text/event-stream', 'OpenAI-Beta': 'responses=experimental', originator: 'provider_router', 'User-Agent': 'provider-router/0.1.0', ...init.headers } }), init.signal);
+      if (response.status === 401 && !force) { await response.body?.cancel().catch((): void => {}); continue; }
       requireSuccess(response); return response;
     }
     throw new RouterError('CODEX_AUTH_EXPIRED', 'The existing Codex login could not authenticate this request.', 401);
@@ -281,10 +282,80 @@ function selectedOpenRouterProvider(metadata: unknown): string | undefined {
 }
 
 function requireSuccess(response: Response): void {
-  if (!response.ok) { void response.body?.cancel().catch((): void => {}); throw new RouterError(response.status === 429 ? 'PROVIDER_RATE_LIMIT' : response.status === 401 ? 'PROVIDER_AUTH_REQUIRED' : 'PROVIDER_UNAVAILABLE', response.status === 429 ? 'The provider is currently rate limited.' : 'The provider request failed. Check the connection in Provider Router.', response.status === 429 ? 429 : 502); }
+  if (response.ok) return;
+  void response.body?.cancel().catch((): void => {});
+  throw statusFailure(response.status);
 }
 
-async function providerJson(response: Response): Promise<unknown> {
+function statusFailure(status: number): RouterError {
+  switch (status) {
+    case 400:
+    case 413:
+    case 422:
+      return new RouterError('PROVIDER_REQUEST_REJECTED', 'The provider rejected the request as invalid.', 400);
+    case 401:
+      return new RouterError('PROVIDER_AUTH_REQUIRED', 'The provider rejected the credential. Check the connection in Provider Router.', 502);
+    case 429:
+      return new RouterError('PROVIDER_RATE_LIMIT', 'The provider is currently rate limited.', 429);
+    default:
+      return unavailable();
+  }
+}
+
+function unavailable(): RouterError {
+  return new RouterError('PROVIDER_UNAVAILABLE', 'The provider request failed. Check the connection in Provider Router.', 502);
+}
+
+function incomplete(): RouterError {
+  return new RouterError('INCOMPLETE_COMPLETION', 'The provider did not finish the response.', 502);
+}
+
+function invalidProviderResponse(): RouterError {
+  return new RouterError('PROVIDER_RESPONSE_INVALID', 'The provider returned an invalid response.', 502);
+}
+
+async function providerTransport<T>(operation: Promise<T>, signal?: AbortSignal | null): Promise<T> {
+  try {
+    return await operation;
+  } catch (error: unknown) {
+    signal?.throwIfAborted();
+    if (error instanceof RouterError) throw error;
+    throw unavailable();
+  }
+}
+
+function parseProviderJson(text: string, reviver?: Parameters<typeof JSON.parse>[1]): unknown {
+  try { return JSON.parse(text, reviver); }
+  catch { throw invalidProviderResponse(); }
+}
+
+function decodeProviderResponse<T>(schema: z.ZodType<T>, value: unknown): T {
+  const decoded: z.ZodSafeParseResult<T> = schema.safeParse(value);
+  if (!decoded.success) throw invalidProviderResponse();
+  return decoded.data;
+}
+
+async function openRouterCompletion(response: Response, signal: AbortSignal): Promise<OpenRouterCompletion> {
+  const statuses: WeakMap<object, number> = new WeakMap();
+  const value: unknown = await providerJson(response, signal, function (this: object, key: string, value: unknown, context?: { source: string }): unknown {
+    // Native distinguishes integer JSON tokens from decimals and exponents such as 429.0 and 4.29e2.
+    if (key === 'code' && typeof value === 'number' && context && /^[45]\d{2}$/.test(context.source)) statuses.set(this, value);
+    return value;
+  });
+  const completion: Record<string, unknown> | undefined = object(value);
+  const choices: unknown = completion?.choices;
+  const firstChoice: unknown = Array.isArray(choices) ? choices[0] : undefined;
+  // Inspect the selected error before requiring a complete choice or usage.
+  const error: unknown = completion?.error ?? object(firstChoice)?.error;
+  if (error != null) {
+    const details: Record<string, unknown> | undefined = object(error);
+    const status: number | undefined = details && statuses.get(details);
+    throw status === undefined ? incomplete() : statusFailure(status);
+  }
+  return decodeProviderResponse(chatDecoder, value);
+}
+
+async function providerJson(response: Response, signal: AbortSignal, reviver?: Parameters<typeof JSON.parse>[1]): Promise<unknown> {
   let received: number = 0;
   const body: ReadableStream<Uint8Array> | undefined = response.body?.pipeThrough(new TransformStream({
     transform(chunk: Uint8Array, controller: TransformStreamDefaultController<Uint8Array>): void {
@@ -293,18 +364,25 @@ async function providerJson(response: Response): Promise<unknown> {
       controller.enqueue(chunk);
     },
   }));
-  return new Response(body).json();
+  const text: string = await providerTransport(new Response(body).text(), signal);
+  return parseProviderJson(text, reviver);
 }
 
 function providerOutputLimit(): RouterError {
   return new RouterError('PROVIDER_OUTPUT_LIMIT', 'The provider response exceeded the supported size.', 502);
 }
 
-const codexEventSchema = z.object({ type: z.string(), response: jsonObjectSchema.optional(), item: z.unknown().optional(), output_index: z.unknown().optional() });
+function codexStreamFailure(error: unknown): RouterError {
+  switch (object(error)?.code) {
+    case 'server_error': return statusFailure(500);
+    case 'rate_limit_exceeded': return statusFailure(429);
+    default: return incomplete();
+  }
+}
 
 /** SSE is parsed incrementally and bounded; incomplete streams never become successful answers. */
 async function completedResponse(response: Response, signal: AbortSignal): Promise<Record<string, unknown>> {
-  if (!response.body) throw new RouterError('INCOMPLETE_COMPLETION', 'The subscription returned no stream.', 502);
+  if (!response.body) throw incomplete();
   const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
   const decoder: TextDecoder = new TextDecoder();
   const completedItems: Map<number, Record<string, unknown>> = new Map();
@@ -313,7 +391,7 @@ async function completedResponse(response: Response, signal: AbortSignal): Promi
   try {
     while (true) {
       signal.throwIfAborted();
-      const frame: ReadableStreamReadResult<Uint8Array> = await reader.read();
+      const frame: ReadableStreamReadResult<Uint8Array> = await providerTransport(reader.read(), signal);
       if (frame.done) break;
       received += frame.value.length;
       if (received > MAX_PROVIDER_BYTES) throw providerOutputLimit();
@@ -323,17 +401,22 @@ async function completedResponse(response: Response, signal: AbortSignal): Promi
         const block: string = buffer.slice(0, separator.index); buffer = buffer.slice(separator.index + separator[0].length);
         const data: string = block.split(/\r?\n/).filter((line: string): boolean => line.startsWith('data:')).map((line: string): string => line.slice(5).trimStart()).join('\n');
         if (!data || data === '[DONE]') continue;
-        const event: z.infer<typeof codexEventSchema> = codexEventSchema.parse(JSON.parse(data));
-        if (event.type === 'response.completed' && event.response) return mergeCodexItems(event.response, completedItems);
-        if (event.type === 'response.output_item.done') {
+        const event: Record<string, unknown> | undefined = object(parseProviderJson(data));
+        if (event?.type === 'response.failed') throw codexStreamFailure(object(event.response)?.error);
+        if (event?.type === 'error') throw codexStreamFailure(event);
+        if (event?.type === 'response.incomplete') throw incomplete();
+        if (event?.type === 'response.completed') {
+          const completed: Record<string, unknown> | undefined = object(event.response);
+          if (completed) return mergeCodexItems(completed, completedItems);
+        }
+        if (event?.type === 'response.output_item.done') {
           const item: Record<string, unknown> | undefined = object(event.item);
           const index: z.ZodSafeParseResult<number> = number.safeParse(event.output_index);
           if (item) completedItems.set(index.success ? index.data : completedItems.size, item);
         }
-        if (['response.failed', 'response.incomplete', 'error'].includes(event.type)) throw new RouterError('INCOMPLETE_COMPLETION', 'The provider did not complete the inference.', 502);
       }
     }
-    throw new RouterError('INCOMPLETE_COMPLETION', 'The provider stream ended before completion.', 502);
+    throw incomplete();
   } finally { await reader.cancel().catch((): void => {}); reader.releaseLock(); }
 }
 

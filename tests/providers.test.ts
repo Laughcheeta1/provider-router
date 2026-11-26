@@ -14,6 +14,15 @@ async function temporary(): Promise<string> { const directory: string = await mk
 function connection(method: Connection['method']): Connection { return { id: uuid7(), name: 'Synthetic provider', method, exposed: true, models: [] }; }
 function request(target: Connection): InferenceRequest { return { request_id: uuid7(), connection_id: target.id, model: 'synthetic-model', reasoning_effort: 'low', messages: [{ role: 'system', content: 'Synthetic standing instruction.' }, { role: 'user', content: 'Synthetic question.' }], tools: [] }; }
 function credentials(expiration: number): CodexCredentials { return { auth_mode: 'chatgpt', last_refresh: new Date().toISOString(), tokens: { access_token: `header.${Buffer.from(JSON.stringify({ exp: expiration })).toString('base64url')}.signature`, refresh_token: 'synthetic-refresh', id_token: 'synthetic-identity', account_id: 'synthetic-account', login_owner_id: 'synthetic-login' } }; }
+async function syntheticCodex(fetcher: typeof fetch): Promise<CodexHttpAdapter> {
+  const home: string = await temporary();
+  let stored: CodexCredentials = credentials(Date.now() / 1000 + 3600);
+  const auth: CodexAuth = new CodexAuth(home, {
+    load: async (): Promise<CodexCredentials> => stored,
+    save: async (_expected, updated): Promise<CodexCredentials> => { stored = updated; return stored; },
+  }, async (): Promise<Response> => Response.json({ access_token: 'rotated-synthetic-access' }), 'https://synthetic.example/oauth/token');
+  return new CodexHttpAdapter(fetcher, 'https://synthetic.example', (): CodexAuth => auth);
+}
 describe('Codex subscription credentials', (): void => {
   it('refreshes once for simultaneous requests and preserves identity plus returned rotated tokens', async (): Promise<void> => {
     let stored: CodexCredentials = credentials(1); let exchanges: number = 0;
@@ -73,6 +82,107 @@ describe('Codex subscription credentials', (): void => {
   });
 });
 describe('HTTP inference adapters', (): void => {
+  it.each([
+    [400, 400, 'PROVIDER_REQUEST_REJECTED'],
+    [413, 400, 'PROVIDER_REQUEST_REJECTED'],
+    [422, 400, 'PROVIDER_REQUEST_REJECTED'],
+    [401, 502, 'PROVIDER_AUTH_REQUIRED'],
+    [403, 502, 'PROVIDER_UNAVAILABLE'],
+    [404, 502, 'PROVIDER_UNAVAILABLE'],
+    [429, 429, 'PROVIDER_RATE_LIMIT'],
+    [500, 502, 'PROVIDER_UNAVAILABLE'],
+    [503, 502, 'PROVIDER_UNAVAILABLE'],
+  ] as const)('maps upstream HTTP %i in both inference adapters', async (upstream, status, code): Promise<void> => {
+    const fetcher: typeof fetch = async (): Promise<Response> => new Response('upstream-private-detail', { status: upstream });
+    const openRouter: Connection = connection('openrouter_http');
+    const codex: Connection = connection('codex_http');
+    const signal: AbortSignal = AbortSignal.timeout(1000);
+    const expected: { status: number; code: string; message?: string } = { status, code };
+    if (status === 400) expected.message = 'The provider rejected the request as invalid.';
+    await expect(new OpenRouterAdapter((): string => 'synthetic-key', fetcher).infer(request(openRouter), openRouter, signal)).rejects.toMatchObject(expected);
+    await expect((await syntheticCodex(fetcher)).infer(request(codex), codex, signal)).rejects.toMatchObject(expected);
+  });
+
+  it('maps synthetic transport errors to provider unavailability for both adapters', async (): Promise<void> => {
+    const fetcher: typeof fetch = async (): Promise<never> => { throw new TypeError('Synthetic provider disconnected'); };
+    const openRouter: Connection = connection('openrouter_http');
+    const codex: Connection = connection('codex_http');
+    const signal: AbortSignal = AbortSignal.timeout(1000);
+    const expected: { status: number; code: string } = { status: 502, code: 'PROVIDER_UNAVAILABLE' };
+    await expect(new OpenRouterAdapter((): string => 'synthetic-key', fetcher).infer(request(openRouter), openRouter, signal)).rejects.toMatchObject(expected);
+    await expect((await syntheticCodex(fetcher)).infer(request(codex), codex, signal)).rejects.toMatchObject(expected);
+  });
+
+  it.each([
+    ['{"code":502}', 502, 'PROVIDER_UNAVAILABLE'],
+    ['{"code":402}', 502, 'PROVIDER_UNAVAILABLE'],
+    ['{"code":429}', 429, 'PROVIDER_RATE_LIMIT'],
+    ['{"code":400}', 400, 'PROVIDER_REQUEST_REJECTED'],
+    ['{"code":401}', 502, 'PROVIDER_AUTH_REQUIRED'],
+    ['{"code":301}', 502, 'INCOMPLETE_COMPLETION'],
+    ['{"code":"429"}', 502, 'INCOMPLETE_COMPLETION'],
+    ['{"code":429.0}', 502, 'INCOMPLETE_COMPLETION'],
+    ['{"code":4.29e2}', 502, 'INCOMPLETE_COMPLETION'],
+    ['{"message":"upstream-private-detail"}', 502, 'INCOMPLETE_COMPLETION'],
+  ] as const)('classifies OpenRouter embedded error %s before decoding a completion', async (error, status, code): Promise<void> => {
+    const target: Connection = connection('openrouter_http');
+    const input: InferenceRequest = request(target);
+    const bodies: string[] = [
+      `{"error":${error}}`,
+      `{"error":null,"choices":[{"error":${error},"finish_reason":"error","message":{"content":"partial"}}]}`,
+      `{"choices":[{"error":${error},"finish_reason":"stop","message":{"content":"partial"}}],"usage":{"prompt_tokens":7,"completion_tokens":2}}`,
+    ];
+    for (const body of bodies) {
+      const adapter: OpenRouterAdapter = new OpenRouterAdapter((): string => 'synthetic-key', async (): Promise<Response> => new Response(body));
+      await expect(adapter.infer(input, target, AbortSignal.timeout(1000))).rejects.toMatchObject({ status, code });
+    }
+  });
+
+  it('gives the top-level OpenRouter error precedence over the first choice', async (): Promise<void> => {
+    const target: Connection = connection('openrouter_http');
+    const adapter: OpenRouterAdapter = new OpenRouterAdapter((): string => 'synthetic-key', async (): Promise<Response> => Response.json({
+      error: { message: 'upstream-private-detail' }, choices: [{ error: { code: 429 } }],
+    }));
+    await expect(adapter.infer(request(target), target, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 502, code: 'INCOMPLETE_COMPLETION' });
+  });
+
+  it('accepts a completed first OpenRouter choice with null errors and an error in a later choice', async (): Promise<void> => {
+    const target: Connection = connection('openrouter_http');
+    const adapter: OpenRouterAdapter = new OpenRouterAdapter((): string => 'synthetic-key', async (): Promise<Response> => Response.json({
+      error: null, choices: [
+        { error: null, finish_reason: 'stop', message: { content: 'done' } },
+        { error: { code: 429 }, finish_reason: 'error', message: { content: 'partial' } },
+      ], usage: { prompt_tokens: 7, completion_tokens: 2 },
+    }));
+    await expect(adapter.infer(request(target), target, AbortSignal.timeout(1000))).resolves.toMatchObject({ content: 'done' });
+  });
+
+  it.each([
+    [{ type: 'response.failed', response: { error: { code: 'server_error' } } }, 502, 'PROVIDER_UNAVAILABLE'],
+    [{ type: 'error', code: 'server_error' }, 502, 'PROVIDER_UNAVAILABLE'],
+    [{ type: 'response.failed', response: { error: { code: 'rate_limit_exceeded' } } }, 429, 'PROVIDER_RATE_LIMIT'],
+    [{ type: 'error', code: 'rate_limit_exceeded', response: null }, 429, 'PROVIDER_RATE_LIMIT'],
+    [{ type: 'response.failed', response: { error: { code: 'invalid_prompt' } } }, 502, 'INCOMPLETE_COMPLETION'],
+    [{ type: 'response.failed', response: null }, 502, 'INCOMPLETE_COMPLETION'],
+    [{ type: 'response.incomplete' }, 502, 'INCOMPLETE_COMPLETION'],
+    [{ type: 'response.completed', response: { status: 'incomplete' } }, 502, 'INCOMPLETE_COMPLETION'],
+  ] as const)('preserves the upstream meaning of Codex SSE event %j', async (event, status, code): Promise<void> => {
+    const target: Connection = connection('codex_http');
+    const adapter: CodexHttpAdapter = await syntheticCodex(async (): Promise<Response> => new Response(`data: ${JSON.stringify(event)}\n\n`));
+    await expect(adapter.infer(request(target), target, AbortSignal.timeout(1000))).rejects.toMatchObject({ status, code });
+  });
+
+  it('classifies a malformed completion as an invalid provider response in both adapters', async (): Promise<void> => {
+    const openRouter: Connection = connection('openrouter_http');
+    const codex: Connection = connection('codex_http');
+    const signal: AbortSignal = AbortSignal.timeout(1000);
+    const expected: { status: number; code: string } = { status: 502, code: 'PROVIDER_RESPONSE_INVALID' };
+    const openRouterAdapter: OpenRouterAdapter = new OpenRouterAdapter((): string => 'synthetic-key', async (): Promise<Response> => Response.json({ choices: [] }));
+    const codexAdapter: CodexHttpAdapter = await syntheticCodex(async (): Promise<Response> => new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n'));
+    await expect(openRouterAdapter.infer(request(openRouter), openRouter, signal)).rejects.toMatchObject(expected);
+    await expect(codexAdapter.infer(request(codex), codex, signal)).rejects.toMatchObject(expected);
+  });
+
   it('uses published reasoning options and keeps mandatory reasoning enabled in model discovery', async (): Promise<void> => {
     const target: Connection = connection('openrouter_http');
     const adapter: OpenRouterAdapter = new OpenRouterAdapter((): string => 'synthetic-api-key', async (): Promise<Response> => Response.json({ data: [{ id: 'mandatory-model', name: 'Mandatory', context_length: 10000, top_provider: { max_completion_tokens: null }, supported_parameters: ['tools', 'structured_outputs'], reasoning: { supported_efforts: null, mandatory: true, default_effort: 'high' } }, { id: 'ordinary-model', name: 'Ordinary', context_length: 10000, top_provider: { max_completion_tokens: 1000 }, supported_parameters: [] }] }));

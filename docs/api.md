@@ -121,7 +121,7 @@ Disconnecting or aborting an inference HTTP request cancels its local provider o
 
 Errors use `{"error":{"message":"Safe explanation","type":"invalid_request_error","param":null,"code":"STABLE_CODE"}}`. Authentication, rate-limit, unsupported capability, invalid output, cancellation and provider failures have stable codes. Upstream raw errors and request contents are never reflected. JSON Schema and tool arguments are validated before success is returned.
 
-The Router maps upstream Codex and OpenRouter inference responses as follows.
+The Router maps upstream Codex and OpenRouter inference responses as follows. For embedded OpenRouter errors, it checks the top-level error first and checks the first choice only if the top-level error is absent or null.
 
 | Upstream result | Router HTTP status | `error.code` |
 | --- | --- | --- |
@@ -130,7 +130,8 @@ The Router maps upstream Codex and OpenRouter inference responses as follows.
 | 401 | 502 | `PROVIDER_AUTH_REQUIRED` |
 | 429 | 429 | `PROVIDER_RATE_LIMIT` |
 | All other non-2xx statuses, including 403, 404 and 5xx, or a transport failure | 502 | `PROVIDER_UNAVAILABLE` |
-| OpenRouter error inside an HTTP 200 body, top-level or per choice | As if its numeric `code` were the upstream status; 502 without one | As if its numeric `code` were the upstream status; `INCOMPLETE_COMPLETION` without one |
+| Embedded OpenRouter error with an integer `code` from 400 through 599 | As if the code were the upstream HTTP status | As if the code were the upstream HTTP status |
+| Any other embedded OpenRouter error | 502 | `INCOMPLETE_COMPLETION` |
 | Codex stream failure with `server_error` | 502 | `PROVIDER_UNAVAILABLE` |
 | Codex stream failure with `rate_limit_exceeded` | 429 | `PROVIDER_RATE_LIMIT` |
 | Any other Codex stream failure or incomplete response | 502 | `INCOMPLETE_COMPLETION` |

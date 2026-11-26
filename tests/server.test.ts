@@ -26,7 +26,13 @@ async function fixture(infer?: ProviderAdapter['infer'], requireApiKey: boolean 
   return { store, listener, token: client.token, client_id: client.id, connection, directory };
 }
 function request(connection: Connection): InferenceRequest { return { request_id: uuid7(), connection_id: connection.id, model: model.id, reasoning_effort: 'low', messages: [{ role: 'user', content: 'Synthetic question' }], tools: [] }; }
-async function post(endpoint: string, token: string, payload: unknown): Promise<Response> { return fetch(`${endpoint}/v1/inference`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+async function post(endpoint: string, token: string, payload: unknown, surface: string = '/v1/inference'): Promise<Response> { return fetch(`${endpoint}${surface}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+function syntheticCodex(fetcher: typeof fetch): CodexHttpAdapter {
+  return new CodexHttpAdapter(fetcher, 'https://synthetic.example', (home: string): CodexAuth => new CodexAuth(home, {
+    load: async (): Promise<CodexCredentials> => ({ auth_mode: 'chatgpt', last_refresh: new Date().toISOString(), tokens: { access_token: 'synthetic-access', refresh_token: 'synthetic-refresh' } }),
+    save: async (): Promise<never> => { throw new Error('Unexpected credential write.'); },
+  }, async (): Promise<never> => { throw new Error('Unexpected credential refresh.'); }));
+}
 describe('Provider Router API', (): void => {
   it('returns ordered Codex state and cache usage, then replays it with the tool result and session', async (): Promise<void> => {
     const reasoning: Record<string, unknown> = { type: 'reasoning', id: 'reasoning-1', encrypted_content: 'synthetic-state' };
@@ -35,7 +41,7 @@ describe('Provider Router API', (): void => {
     const summary: Record<string, unknown> = { type: 'reasoning', id: 'summary-1', summary: [{ type: 'summary_text', text: 'Summary only.' }] };
     const output: Record<string, unknown>[] = [reasoning, message, { ...call, status: 'completed' }, summary];
     const requests: { payload: Record<string, unknown>; headers: Headers }[] = [];
-    const adapter: CodexHttpAdapter = new CodexHttpAdapter(async (_url, init): Promise<Response> => {
+    const adapter: CodexHttpAdapter = syntheticCodex(async (_url, init): Promise<Response> => {
       requests.push({ payload: JSON.parse(String(init?.body)), headers: new Headers(init?.headers) });
       if (requests.length === 1) {
         return new Response([
@@ -47,10 +53,7 @@ describe('Provider Router API', (): void => {
         ].map((event): string => `data: ${JSON.stringify(event)}\n\n`).join(''));
       }
       return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [{ ...message, content: [{ type: 'output_text', text: 'The value is 42.' }] }], usage: { input_tokens: 25, output_tokens: 4, input_tokens_details: { cached_tokens: 0 } } } })}\n\n`);
-    }, 'https://synthetic.example', (home: string): CodexAuth => new CodexAuth(home, {
-      load: async (): Promise<CodexCredentials> => ({ auth_mode: 'chatgpt', last_refresh: new Date().toISOString(), tokens: { access_token: 'synthetic-access', refresh_token: 'synthetic-refresh' } }),
-      save: async (): Promise<never> => { throw new Error('Unexpected credential write.'); },
-    }, async (): Promise<never> => { throw new Error('Unexpected credential refresh.'); }));
+    });
     const { listener, token, connection } = await fixture(adapter.infer.bind(adapter));
     const tools: Tool[] = [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } }];
     const input: InferenceRequest = { ...request(connection), session_id: uuid7(), tools };
@@ -78,6 +81,41 @@ describe('Provider Router API', (): void => {
     expect(invalid.status).toBe(400);
     expect(await invalid.json()).toMatchObject({ error: { code: 'INVALID_HISTORY' } });
     expect(requests).toHaveLength(2);
+  });
+
+  it.each(['/v1/inference', '/v1/chat/completions', '/v1/responses'] as const)('replays text-only assistant state with null optional fields through %s', async (surface): Promise<void> => {
+    const reply: Record<string, unknown> = { type: 'message', id: 'message-1', role: 'assistant', content: [{ type: 'output_text', text: 'First answer.' }] };
+    const providerInputs: unknown[] = [];
+    const adapter: CodexHttpAdapter = syntheticCodex(async (_url, init): Promise<Response> => {
+      const payload: { input: unknown } = JSON.parse(String(init?.body));
+      providerInputs.push(payload.input);
+      return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [reply], usage: { input_tokens: 5, output_tokens: 2 } } })}\n\n`);
+    });
+    const { listener, token, connection } = await fixture(adapter.infer.bind(adapter));
+    const input: InferenceRequest = request(connection);
+    const first: Response = await post(listener.endpoint, token, input);
+    expect(first.status).toBe(200);
+    const result: InferenceResult = await first.json();
+    expect(result.continuation?.state).toEqual({ format: 'codex_responses', items: [reply] });
+
+    const messages: unknown[] = [
+      ...input.messages,
+      { role: 'assistant', content: result.content, continuation: result.continuation, tool_calls: null, tool_call_id: null, name: null },
+      { role: 'user', content: 'Follow-up question.', continuation: null },
+    ];
+    const selected: string = `${connection.id}/${model.id}`;
+    const payloads: Record<typeof surface, unknown> = {
+      '/v1/inference': { ...input, request_id: uuid7(), messages },
+      '/v1/chat/completions': { model: selected, messages },
+      '/v1/responses': { model: selected, input: 'Follow-up question.', provider_router_messages: messages },
+    };
+    const replay: Response = await post(listener.endpoint, token, payloads[surface], surface);
+    expect(replay.status).toBe(200);
+    expect(providerInputs[1]).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'Synthetic question' }] },
+      reply,
+      { role: 'user', content: [{ type: 'input_text', text: 'Follow-up question.' }] },
+    ]);
   });
 
   it.each(['role', 'connection', 'model'] as const)('rejects assistant state with a mismatched %s', async (scope): Promise<void> => {
