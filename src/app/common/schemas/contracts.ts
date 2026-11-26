@@ -35,10 +35,22 @@ export const filePartSchema = z.object({
   type: z.literal('file'),
   file: z.object({ filename: z.string().min(1).max(255), file_data: z.string().min(1) }).strict(),
 }).strict();
+/** Provider-owned assistant state scoped to the connection and model that produced it. */
+const continuationSchema = z.object({
+  // History validation requires this identity to match the request's UUIDv7 connection.
+  connection_id: z.string().uuid(),
+  model: z.string(),
+  state: z.discriminatedUnion('format', [
+    z.object({ format: z.literal('codex_responses'), items: z.array(z.json()) }).strict(),
+    z.object({ format: z.literal('openrouter_chat'), message: jsonObjectSchema, upstream: z.string(), resolved_model: z.string() }).strict(),
+  ]),
+}).strict();
+export type Continuation = z.infer<typeof continuationSchema>;
 export const messageSchema = z.object({
   role: z.enum(['system', 'developer', 'user', 'assistant', 'tool']),
   content: z.union([z.string(), z.array(jsonObjectSchema), z.null()]),
   tool_calls: z.array(toolCallSchema).optional(), tool_call_id: z.string().optional(), name: z.string().optional(),
+  continuation: continuationSchema.nullable().transform((value: Continuation | null): Continuation | undefined => value ?? undefined).optional(),
 }).strict();
 export type Message = z.infer<typeof messageSchema>;
 export const toolSchema = z.object({ type: z.literal('function'), function: z.object({ name: z.string().min(1), description: z.string().optional(), parameters: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).strict();
@@ -50,12 +62,17 @@ export const inferenceSchema = z.object({
   max_output_tokens: z.number().int().positive().optional(),
   tool_choice: z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), function: z.object({ name: z.string().min(1) }) })]).optional(),
   parallel_tool_calls: z.boolean().optional(),
+  session_id: uuidSchema.nullable().transform((value: string | null): string | undefined => value?.toLowerCase()).optional(),
 }).strict();
 export type InferenceRequest = z.infer<typeof inferenceSchema>;
 export const resultSchema = z.object({
   request_id: uuidSchema, content: z.string(), tool_calls: z.array(toolCallSchema),
-  usage: z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative() }),
+  usage: z.object({
+    input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
+    cached_input_tokens: z.number().int().nonnegative().optional(), cache_write_tokens: z.number().int().nonnegative().optional(),
+  }),
   provider: z.enum(['codex', 'openrouter']), method: methodSchema, model: z.string(), reasoning_effort: z.string().optional(),
+  continuation: continuationSchema.optional(),
 });
 export type InferenceResult = z.infer<typeof resultSchema>;
 export interface ProviderDescriptor { id: string; name: string; provider: 'codex' | 'openrouter'; method: Method; models: Model[] }

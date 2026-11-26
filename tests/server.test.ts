@@ -7,7 +7,9 @@ import path from 'node:path';
 import { RouterStore, type SecretCipher } from '../src/app/products/router/repository/settings/file.ts';
 import { startRouter, validateNetwork, type ListeningRouter } from '../src/app/products/router/router.ts';
 import { uuid7 } from '../src/app/common/identity/identity.ts';
-import type { Connection, InferenceRequest, InferenceResult, Model, ProviderAdapter } from '../src/app/common/schemas/contracts.ts';
+import type { Connection, Continuation, InferenceRequest, InferenceResult, Message, Model, ProviderAdapter, Tool } from '../src/app/common/schemas/contracts.ts';
+import { CodexAuth, type CodexCredentials } from '../src/app/services/provider-service/providers/codex-auth.ts';
+import { CodexHttpAdapter } from '../src/app/services/provider-service/providers/http-providers.ts';
 const directories: string[] = [];
 const listeners: ListeningRouter[] = [];
 const model: Model = { id: 'test-model', name: 'Synthetic model', reasoning_efforts: ['low', 'high'], default_reasoning_effort: 'low', context_window: 32000, max_output_tokens: 4000, tools: true, structured_output: true, input_modalities: ['text'] };
@@ -26,6 +28,66 @@ async function fixture(infer?: ProviderAdapter['infer'], requireApiKey: boolean 
 function request(connection: Connection): InferenceRequest { return { request_id: uuid7(), connection_id: connection.id, model: model.id, reasoning_effort: 'low', messages: [{ role: 'user', content: 'Synthetic question' }], tools: [] }; }
 async function post(endpoint: string, token: string, payload: unknown): Promise<Response> { return fetch(`${endpoint}/v1/inference`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
 describe('Provider Router API', (): void => {
+  it('returns ordered Codex state and cache usage, then replays it with the tool result and session', async (): Promise<void> => {
+    const reasoning: Record<string, unknown> = { type: 'reasoning', id: 'reasoning-1', encrypted_content: 'synthetic-state' };
+    const message: Record<string, unknown> = { type: 'message', id: 'message-1', role: 'assistant', content: [{ type: 'output_text', text: 'Checking the value.' }] };
+    const call: { type: 'function_call'; id: string; call_id: string; name: string; arguments: string } = { type: 'function_call', id: 'item-1', call_id: 'call-1', name: 'lookup', arguments: '{"count":1,"key":"a"}' };
+    const summary: Record<string, unknown> = { type: 'reasoning', id: 'summary-1', summary: [{ type: 'summary_text', text: 'Summary only.' }] };
+    const output: Record<string, unknown>[] = [reasoning, message, { ...call, status: 'completed' }, summary];
+    const requests: { payload: Record<string, unknown>; headers: Headers }[] = [];
+    const adapter: CodexHttpAdapter = new CodexHttpAdapter(async (_url, init): Promise<Response> => {
+      requests.push({ payload: JSON.parse(String(init?.body)), headers: new Headers(init?.headers) });
+      if (requests.length === 1) {
+        return new Response([
+          { type: 'response.output_item.done', output_index: 2, item: call },
+          { type: 'response.output_item.done', output_index: 0, item: reasoning },
+          { type: 'response.output_item.done', output_index: 3, item: summary },
+          { type: 'response.output_item.done', output_index: 1, item: message },
+          { type: 'response.completed', response: { status: 'completed', output: [{ id: call.id, status: 'completed' }], usage: { input_tokens: 20, output_tokens: 8, input_tokens_details: { cached_tokens: 10, cache_write_tokens: 5 } } } },
+        ].map((event): string => `data: ${JSON.stringify(event)}\n\n`).join(''));
+      }
+      return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [{ ...message, content: [{ type: 'output_text', text: 'The value is 42.' }] }], usage: { input_tokens: 25, output_tokens: 4, input_tokens_details: { cached_tokens: 0 } } } })}\n\n`);
+    }, 'https://synthetic.example', (home: string): CodexAuth => new CodexAuth(home, {
+      load: async (): Promise<CodexCredentials> => ({ auth_mode: 'chatgpt', last_refresh: new Date().toISOString(), tokens: { access_token: 'synthetic-access', refresh_token: 'synthetic-refresh' } }),
+      save: async (): Promise<never> => { throw new Error('Unexpected credential write.'); },
+    }, async (): Promise<never> => { throw new Error('Unexpected credential refresh.'); }));
+    const { listener, token, connection } = await fixture(adapter.infer.bind(adapter));
+    const tools: Tool[] = [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } }];
+    const input: InferenceRequest = { ...request(connection), session_id: uuid7(), tools };
+    const first: Response = await post(listener.endpoint, token, input);
+    expect(first.status).toBe(200);
+    const result: InferenceResult = await first.json();
+    expect(result.continuation).toEqual({ connection_id: connection.id, model: model.id, state: { format: 'codex_responses', items: output } });
+    expect(result.usage).toEqual({ input_tokens: 20, output_tokens: 8, cached_input_tokens: 10, cache_write_tokens: 5 });
+
+    const assistant: Message = { role: 'assistant', content: result.content, continuation: result.continuation, tool_calls: [{ id: call.call_id, type: 'function', function: { name: call.name, arguments: '{"key":"a", "count":1}' } }] };
+    const tool: Message = { role: 'tool', tool_call_id: call.call_id, content: '42' };
+    const second: Response = await post(listener.endpoint, token, { ...input, request_id: uuid7(), messages: [...input.messages, assistant, tool] });
+    expect(second.status).toBe(200);
+    const answer: InferenceResult = await second.json();
+    expect(answer.usage).toEqual({ input_tokens: 25, output_tokens: 4, cached_input_tokens: 0 });
+    expect(answer.continuation?.state).toMatchObject({ format: 'codex_responses', items: [{ content: [{ text: 'The value is 42.' }] }] });
+    expect(requests[1]?.payload).toMatchObject({
+      include: ['reasoning.encrypted_content'], prompt_cache_key: input.session_id,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Synthetic question' }] }, ...output.slice(0, 3), { type: 'function_call_output', call_id: call.call_id, output: '42' }],
+    });
+    expect(requests[1]?.headers.get('session-id')).toBe(input.session_id);
+
+    const mismatched: Message = { ...assistant, tool_calls: [{ id: call.call_id, type: 'function', function: { name: call.name, arguments: '{"key":"b"}' } }] };
+    const invalid: Response = await post(listener.endpoint, token, { ...input, request_id: uuid7(), messages: [...input.messages, mismatched, tool] });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ error: { code: 'INVALID_HISTORY' } });
+    expect(requests).toHaveLength(2);
+  });
+
+  it.each(['role', 'connection', 'model'] as const)('rejects assistant state with a mismatched %s', async (scope): Promise<void> => {
+    const { listener, token, connection } = await fixture(async (): Promise<never> => { throw new Error('Out-of-scope state reached the provider.'); });
+    const continuation: Continuation = { connection_id: scope === 'connection' ? uuid7() : connection.id, model: scope === 'model' ? 'another-model' : model.id, state: { format: 'codex_responses', items: [] } };
+    const input: InferenceRequest = { ...request(connection), messages: [{ role: scope === 'role' ? 'user' : 'assistant', content: 'Old turn', continuation }] };
+    const response: Response = await post(listener.endpoint, token, input);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: 'INVALID_HISTORY' } });
+  });
   it('allows approved browser origins through preflight and inference without a key, and keeps errors readable', async (): Promise<void> => {
     const origin: string = 'https://attalid.example';
     const { listener, connection } = await fixture(undefined, false, [origin]);

@@ -7,15 +7,17 @@ import path from 'node:path';
 import { uuid7 } from '../src/app/common/identity/identity.ts';
 import { startRouter, type ListeningRouter } from '../src/app/products/router/router.ts';
 import { RouterStore } from '../src/app/products/router/repository/settings/file.ts';
-import type { Connection, InferenceRequest, InferenceResult, Model, ProviderAdapter } from '../src/app/common/schemas/contracts.ts';
+import type { Connection, Continuation, InferenceRequest, InferenceResult, Model, ProviderAdapter } from '../src/app/common/schemas/contracts.ts';
 let directory: string;
 let listener: ListeningRouter;
 let client: OpenAI;
 let selected: string;
 let store: RouterStore;
 let lastRequest: InferenceRequest | null;
+let resultExtensions: Partial<Pick<InferenceResult, 'continuation' | 'usage'>>;
 const model: Model = { id: 'example/model', name: 'Synthetic model', reasoning_efforts: ['low', 'high'], default_reasoning_effort: 'low', context_window: 32000, max_output_tokens: 4000, tools: true, structured_output: true, input_modalities: ['text'] };
 beforeEach(async (): Promise<void> => {
+  resultExtensions = {};
   directory = await mkdtemp(path.join(os.tmpdir(), 'router-sdk-test-'));
   store = await RouterStore.open(directory, { encrypt: (value: string): Buffer => Buffer.from(value), decrypt: (value: Buffer): string => value.toString() });
   const connection: Connection = { id: uuid7(), name: 'Synthetic provider', method: 'codex_http', exposed: true, models: [model] };
@@ -23,7 +25,7 @@ beforeEach(async (): Promise<void> => {
   const key: { id: string; token: string } = await store.createClient('Official SDK test');
   const adapter: ProviderAdapter = { models: async (): Promise<Model[]> => [model], infer: async (request: InferenceRequest): Promise<InferenceResult> => {
     lastRequest = request;
-    return { request_id: request.request_id, model: request.model, content: request.tools.length ? '' : '{"answer":42}', tool_calls: request.tools.length ? [{ id: 'call-synthetic', type: 'function', function: { name: 'read_balance', arguments: '{"id":"a"}' } }] : [], usage: { input_tokens: 21, output_tokens: 8 }, provider: 'codex', method: 'codex_http', reasoning_effort: request.reasoning_effort };
+    return { request_id: request.request_id, model: request.model, content: request.tools.length ? '' : '{"answer":42}', tool_calls: request.tools.length ? [{ id: 'call-synthetic', type: 'function', function: { name: 'read_balance', arguments: '{"id":"a"}' } }] : [], usage: { input_tokens: 21, output_tokens: 8 }, provider: 'codex', method: 'codex_http', reasoning_effort: request.reasoning_effort, ...resultExtensions };
   } };
   listener = await startRouter(store, { codex_cli: adapter, codex_http: adapter, openrouter_http: adapter }, { host: '127.0.0.1', port: 0, require_api_key: true }, '0.1.0');
   client = new OpenAI({ apiKey: key.token, baseURL: `${listener.endpoint}/v1`, maxRetries: 0 }); lastRequest = null;
@@ -43,6 +45,7 @@ describe('OpenAI SDK compatibility', (): void => {
     const models = await client.models.list(); expect(models.data[0]?.id).toBe(selected);
     const result = await client.chat.completions.create({ model: selected, messages: [{ role: 'user', content: 'Synthetic question' }], reasoning_effort: 'low', response_format: { type: 'json_schema', json_schema: { name: 'answer', schema: { type: 'object', properties: { answer: { type: 'integer' } }, required: ['answer'] } } } });
     expect(result.object).toBe('chat.completion'); expect(result.choices[0]?.message.content).toBe('{"answer":42}'); expect(result.model).toBe(selected); expect(result.usage?.total_tokens).toBe(29); expect(lastRequest?.reasoning_effort).toBe('low');
+    expect(result.usage?.prompt_tokens_details).toEqual({});
     expect(result._request_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7/);
   });
   it('returns standard function tool calls and forwards complete history associations', async (): Promise<void> => {
@@ -58,6 +61,32 @@ describe('OpenAI SDK compatibility', (): void => {
   it('completes Responses with instructions, input, schema and native function result associations', async (): Promise<void> => {
     const result = await client.responses.create({ model: selected, instructions: 'Synthetic instruction', input: [{ role: 'user', content: [{ type: 'input_text', text: 'Synthetic question' }] }, { type: 'function_call', call_id: 'old-call', name: 'read_balance', arguments: '{"id":"a"}' }, { type: 'function_call_output', call_id: 'old-call', output: '{"balance":42}' }], reasoning: { effort: 'low' }, text: { format: { type: 'json_schema', name: 'answer', schema: { type: 'object', properties: { answer: { type: 'integer' } }, required: ['answer'] } } } });
     expect(result.object).toBe('response'); expect(result.status).toBe('completed'); expect(result.output_text).toBe('{"answer":42}'); expect(lastRequest?.messages[0]).toMatchObject({ role: 'system', content: 'Synthetic instruction' }); expect(lastRequest?.messages.at(-1)?.tool_call_id).toBe('old-call');
+    expect(result.usage).toEqual({ input_tokens: 21, output_tokens: 8, total_tokens: 29 });
+  });
+  it('uses normalized Responses history and reports cache details on both OpenAI surfaces', async (): Promise<void> => {
+    const continuation: Continuation = { connection_id: store.connections()[0]!.id, model: model.id, state: { format: 'codex_responses', items: [{ type: 'reasoning', encrypted_content: 'synthetic-state' }] } };
+    const session_id: string = uuid7();
+    const provider_router_messages: { role: 'assistant'; content: string; continuation: Continuation }[] = [{ role: 'assistant', content: 'Previous answer', continuation }];
+    resultExtensions = { continuation, usage: { input_tokens: 21, output_tokens: 8, cached_input_tokens: 0, cache_write_tokens: 5 } };
+    const body: Record<string, unknown> = { model: selected, input: 'Placeholder input', instructions: 'Standing instruction', provider_router_messages, session_id };
+    const responses: unknown = await client.post('/responses', { body });
+    expect(responses).toMatchObject({ provider_router: { continuation }, usage: { input_tokens_details: { cached_tokens: 0, cache_write_tokens: 5 } } });
+    expect(lastRequest?.session_id).toBe(session_id);
+    expect(lastRequest?.messages).toEqual([{ role: 'system', content: 'Standing instruction' }, ...provider_router_messages]);
+    await expect(client.post('/responses', { body: { ...body, input: [{ invalid: true }] } })).rejects.toMatchObject({ status: 400, code: 'INVALID_REQUEST' });
+
+    const chat: unknown = await client.chat.completions.create({ model: selected, messages: provider_router_messages });
+    expect(chat).toMatchObject({ usage: { prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 5 } } });
+    expect(chat).not.toHaveProperty('provider_router.continuation');
+    expect(lastRequest?.messages).toEqual(provider_router_messages);
+
+    const stream = await client.responses.create({ model: selected, input: 'New question', stream: true });
+    let completed: unknown;
+    for await (const event of stream) {
+      if (event.type === 'response.completed') completed = event.response;
+    }
+    expect(completed).toMatchObject({ usage: { input_tokens_details: { cached_tokens: 0, cache_write_tokens: 5 } } });
+    expect(completed).not.toHaveProperty('provider_router.continuation');
   });
   it('accepts inline document data in both SDK surfaces and sends only extracted content', async (): Promise<void> => {
     const filename: string = 'summary.txt';

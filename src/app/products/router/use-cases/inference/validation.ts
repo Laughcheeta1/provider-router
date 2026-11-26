@@ -1,6 +1,6 @@
 /** Validate provider answers and tools at the boundary, before returning them to any client. */
 import { Ajv } from 'ajv';
-import { filePartSchema, RouterError, type InferenceRequest, type InferenceResult, type Model, type Tool, type ToolCall } from '../../../../common/schemas/contracts.ts';
+import { filePartSchema, RouterError, type Continuation, type InferenceRequest, type InferenceResult, type Model, type Tool, type ToolCall } from '../../../../common/schemas/contracts.ts';
 
 const ajv: Ajv = new Ajv({ strict: false, allErrors: false, validateFormats: false });
 /** Enforce advertised model choices, output limits and represented input modalities. */
@@ -12,6 +12,10 @@ export function validateRequest(request: InferenceRequest, models: Model[]): voi
   if (request.response_format && !model.structured_output) throw new RouterError('SCHEMA_UNSUPPORTED', 'The selected model does not support structured output.');
   if (request.max_output_tokens && request.max_output_tokens > model.max_output_tokens) throw new RouterError('OUTPUT_LIMIT', 'The output token limit exceeds this model’s capability.');
   for (const message of request.messages) {
+    const continuation: Continuation | undefined = message.continuation;
+    if (continuation && (message.role !== 'assistant' || continuation.connection_id.toLowerCase() !== request.connection_id.toLowerCase() || continuation.model !== request.model)) {
+      throw new RouterError('INVALID_HISTORY', 'Assistant continuation belongs to another connection or model.');
+    }
     if (!Array.isArray(message.content)) continue;
     for (const part of message.content) {
       if (part.type === 'text' && typeof part.text === 'string') continue;

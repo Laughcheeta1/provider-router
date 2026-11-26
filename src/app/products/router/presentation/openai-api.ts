@@ -6,7 +6,23 @@ import { uuid7 } from '../../../common/identity/identity.ts';
 const formatSchema = z.object({ type: z.literal('json_schema'), json_schema: z.object({ name: z.string(), schema: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).strict();
 const toolChoiceSchema = z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), function: z.object({ name: z.string() }) })]);
 const chatSchema = z.object({ model: z.string().min(1), messages: z.array(messageSchema).min(1), tools: z.array(toolSchema).optional(), response_format: formatSchema.optional(), reasoning_effort: z.string().optional(), max_tokens: z.number().int().positive().optional(), max_completion_tokens: z.number().int().positive().optional(), stream: z.boolean().default(false), stream_options: z.object({ include_usage: z.boolean().optional() }).optional(), tool_choice: toolChoiceSchema.optional(), parallel_tool_calls: z.boolean().optional() }).strict();
-const responsesSchema = z.object({ model: z.string().min(1), input: z.union([z.string(), z.array(jsonObjectSchema)]), instructions: z.string().nullable().optional(), tools: z.array(z.object({ type: z.literal('function'), name: z.string(), description: z.string().optional(), parameters: jsonObjectSchema, strict: z.boolean().optional() }).strict()).optional(), text: z.object({ format: z.object({ type: z.literal('json_schema'), name: z.string(), schema: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).optional(), reasoning: z.object({ effort: z.string().nullable().optional() }).optional(), max_output_tokens: z.number().int().positive().optional(), stream: z.boolean().default(false), store: z.literal(false).optional(), tool_choice: z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), name: z.string() })]).optional(), parallel_tool_calls: z.boolean().optional() }).strict();
+const responseTextPartSchema = z.object({ type: z.enum(['input_text', 'output_text']), text: z.string(), annotations: z.array(z.unknown()).optional(), logprobs: z.array(z.unknown()).optional() });
+const responseFilePartSchema = z.object({ type: z.literal('input_file'), filename: z.string(), file_data: z.string() }).strict();
+const responseInputSchema = z.union([z.string(), z.array(z.union([
+  z.object({ type: z.literal('function_call'), call_id: z.string(), name: z.string(), arguments: z.string(), id: z.string().nullish(), status: z.string().nullish() }).strict(),
+  z.object({ type: z.literal('function_call_output'), call_id: z.string(), output: z.string(), id: z.string().nullish() }).strict(),
+  z.object({ role: messageSchema.shape.role, type: z.string().nullish(), content: z.union([z.string(), z.array(z.union([responseTextPartSchema, responseFilePartSchema]))]), id: z.string().nullish(), status: z.string().nullish() }).strict(),
+]))]);
+const responsesSchema = z.object({
+  model: z.string().min(1), input: responseInputSchema, instructions: z.string().nullish(),
+  tools: z.array(z.object({ type: z.literal('function'), name: z.string(), description: z.string().optional(), parameters: jsonObjectSchema, strict: z.boolean().optional() }).strict()).optional(),
+  text: z.object({ format: z.object({ type: z.literal('json_schema'), name: z.string(), schema: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).optional(),
+  reasoning: z.object({ effort: z.string().nullish() }).optional(),
+  max_output_tokens: z.number().int().positive().optional(), stream: z.boolean().default(false), store: z.literal(false).optional(),
+  tool_choice: z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), name: z.string() })]).optional(),
+  parallel_tool_calls: z.boolean().optional(),
+  provider_router_messages: z.array(messageSchema).nullish(), session_id: inferenceSchema.shape.session_id,
+}).strict();
 export interface OpenAIRequest {
   inference: InferenceRequest;
   tools: Tool[];
@@ -36,11 +52,18 @@ export function decodeOpenAI(surface: 'chat' | 'responses', value: unknown, conn
   }
   const input = responsesSchema.parse(value);
   const selected: { connection: Connection; model: string; qualified: string } = selectModel(input.model, connections);
-  const messages: Message[] = responseMessages(input.input);
-  if (input.instructions) messages.unshift({ role: 'system', content: input.instructions });
+  const messages: Message[] = input.provider_router_messages ?? responseMessages(input.input);
+  if (input.instructions != null) messages.unshift({ role: 'system', content: input.instructions });
   const choice: OpenAIRequest['tool_choice'] = typeof input.tool_choice === 'object' ? { name: input.tool_choice.name } : input.tool_choice || 'auto';
   const tools: Tool[] = (input.tools || []).map((tool): Tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters, strict: tool.strict } }));
-  const inference: InferenceRequest = inferenceSchema.parse({ request_id: id, connection_id: selected.connection.id, model: selected.model, messages, tools: choice === 'none' ? [] : (input.tools || []).map((tool): Tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters, strict: tool.strict } })), reasoning_effort: input.reasoning?.effort || undefined, response_format: input.text?.format ? { type: 'json_schema', json_schema: { name: input.text.format.name, schema: input.text.format.schema, strict: input.text.format.strict } } : undefined, max_output_tokens: input.max_output_tokens, tool_choice: typeof choice === 'object' ? { type: 'function', function: { name: choice.name } } : choice, parallel_tool_calls: input.parallel_tool_calls });
+  const inference: InferenceRequest = inferenceSchema.parse({
+    request_id: id, connection_id: selected.connection.id, model: selected.model, messages,
+    tools: choice === 'none' ? [] : tools, reasoning_effort: input.reasoning?.effort || undefined,
+    response_format: input.text?.format ? { type: 'json_schema', json_schema: { name: input.text.format.name, schema: input.text.format.schema, strict: input.text.format.strict } } : undefined,
+    max_output_tokens: input.max_output_tokens,
+    tool_choice: typeof choice === 'object' ? { type: 'function', function: { name: choice.name } } : choice,
+    parallel_tool_calls: input.parallel_tool_calls, session_id: input.session_id,
+  });
   validateChoice(choice, inference.tools);
   return { inference, tools, model: selected.qualified, stream: input.stream, stream_usage: true, surface, tool_choice: choice, parallel_tool_calls: input.parallel_tool_calls ?? true };
 }
@@ -55,9 +78,13 @@ export function validateOpenAIResult(request: OpenAIRequest, result: InferenceRe
 export function writeOpenAI(response: ServerResponse, request: OpenAIRequest, result: InferenceResult): void {
   const created: number = Math.floor(Date.now() / 1000);
   const provenance: Record<string, unknown> = { provider: result.provider, method: result.method, connection_id: request.inference.connection_id, model: result.model, ...(result.reasoning_effort ? { reasoning_effort: result.reasoning_effort } : {}) };
+  const { cached_input_tokens, cache_write_tokens } = result.usage;
+  const cacheDetails: Record<string, number> = {};
+  if (cached_input_tokens !== undefined) cacheDetails.cached_tokens = cached_input_tokens;
+  if (cache_write_tokens !== undefined) cacheDetails.cache_write_tokens = cache_write_tokens;
   if (request.surface === 'chat') {
     const id: string = `chatcmpl-${result.request_id}`;
-    const usage: Record<string, number> = { prompt_tokens: result.usage.input_tokens, completion_tokens: result.usage.output_tokens, total_tokens: result.usage.input_tokens + result.usage.output_tokens };
+    const usage: Record<string, unknown> = { prompt_tokens: result.usage.input_tokens, completion_tokens: result.usage.output_tokens, total_tokens: result.usage.input_tokens + result.usage.output_tokens, prompt_tokens_details: cacheDetails };
     const message: Record<string, unknown> = { role: 'assistant', content: result.content || null, ...(result.tool_calls.length ? { tool_calls: result.tool_calls } : {}) };
     const finish: string = result.tool_calls.length ? 'tool_calls' : 'stop';
     if (!request.stream) { json(response, { id, object: 'chat.completion', created, model: request.model, choices: [{ index: 0, message, finish_reason: finish, logprobs: null }], usage, provider_router: provenance }); return; }
@@ -70,10 +97,12 @@ export function writeOpenAI(response: ServerResponse, request: OpenAIRequest, re
     if (request.stream_usage) sse(response, { id, object: 'chat.completion.chunk', created, model: request.model, choices: [], usage });
     response.end('data: [DONE]\n\n'); return;
   }
+  if (!request.stream && result.continuation) provenance.continuation = result.continuation;
   const id: string = `resp_${result.request_id}`;
   const output: Record<string, unknown>[] = result.tool_calls.map((call): Record<string, unknown> => ({ type: 'function_call', id: `fc_${uuid7()}`, call_id: call.id, name: call.function.name, arguments: call.function.arguments, status: 'completed' }));
   if (result.content) output.unshift({ type: 'message', id: `msg_${uuid7()}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: result.content, annotations: [], logprobs: [] }] });
-  const object: Record<string, unknown> = { id, object: 'response', created_at: created, status: 'completed', error: null, incomplete_details: null, model: request.model, output, usage: { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens, total_tokens: result.usage.input_tokens + result.usage.output_tokens, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } }, parallel_tool_calls: request.parallel_tool_calls, tool_choice: typeof request.tool_choice === 'object' ? { type: 'function', name: request.tool_choice.name } : request.tool_choice, tools: request.tools.map((tool: Tool) => ({ type: 'function', ...tool.function })), metadata: {}, store: false, provider_router: provenance };
+  const usage: Record<string, unknown> = { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens, total_tokens: result.usage.input_tokens + result.usage.output_tokens, ...(Object.keys(cacheDetails).length ? { input_tokens_details: cacheDetails } : {}) };
+  const object: Record<string, unknown> = { id, object: 'response', created_at: created, status: 'completed', error: null, incomplete_details: null, model: request.model, output, usage, parallel_tool_calls: request.parallel_tool_calls, tool_choice: typeof request.tool_choice === 'object' ? { type: 'function', name: request.tool_choice.name } : request.tool_choice, tools: request.tools.map((tool: Tool) => ({ type: 'function', ...tool.function })), metadata: {}, store: false, provider_router: provenance };
   if (!request.stream) { json(response, object); return; }
   sseHeaders(response);
   let sequence: number = 0;
@@ -103,27 +132,23 @@ function selectModel(name: string, connections: Connection[]): { connection: Con
   if (choices.length !== 1) throw new RouterError('MODEL_AMBIGUOUS', 'Multiple connections expose this model. Use the qualified model identifier from /v1/models.');
   return choices[0]!;
 }
-function responseMessages(input: string | Record<string, unknown>[]): Message[] {
+function responseMessages(input: z.infer<typeof responseInputSchema>): Message[] {
   if (typeof input === 'string') return [{ role: 'user', content: input }];
-  return input.map((item: Record<string, unknown>): Message => {
+  return input.map((item): Message => {
+    if ('role' in item) {
+      if (item.role === 'tool' || (item.type != null && item.type !== 'message')) throw new RouterError('INVALID_REQUEST', 'The request does not match the API contract.');
+      if (typeof item.content === 'string') return { role: item.role, content: item.content };
+      if (!item.content.some((part): boolean => part.type === 'input_file')) {
+        return { role: item.role, content: item.content.map((part): string => 'text' in part ? part.text : '').join('\n') };
+      }
+      return { role: item.role, content: item.content.map((part): Record<string, unknown> => part.type === 'input_file'
+        ? { type: 'file', file: { filename: part.filename, file_data: part.file_data } }
+        : { type: 'text', text: part.text }) };
+    }
     if (item.type === 'function_call') {
-      const call = z.object({ type: z.literal('function_call'), call_id: z.string(), name: z.string(), arguments: z.string(), id: z.string().optional(), status: z.string().optional() }).parse(item);
-      return { role: 'assistant', content: '', tool_calls: [{ id: call.call_id, type: 'function', function: { name: call.name, arguments: call.arguments } }] };
+      return { role: 'assistant', content: '', tool_calls: [{ id: item.call_id, type: 'function', function: { name: item.name, arguments: item.arguments } }] };
     }
-    if (item.type === 'function_call_output') {
-      const output = z.object({ type: z.literal('function_call_output'), call_id: z.string(), output: z.string(), id: z.string().optional() }).parse(item);
-      return { role: 'tool', tool_call_id: output.call_id, content: output.output };
-    }
-    const textPart = z.object({ type: z.enum(['input_text', 'output_text']), text: z.string(), annotations: z.array(z.unknown()).optional(), logprobs: z.array(z.unknown()).optional() });
-    const filePart = z.object({ type: z.literal('input_file'), filename: z.string(), file_data: z.string() }).strict();
-    const message = z.object({ role: z.enum(['system', 'developer', 'user', 'assistant']), type: z.literal('message').optional(), content: z.union([z.string(), z.array(z.union([textPart, filePart]))]), id: z.string().optional(), status: z.string().optional() }).strict().parse(item);
-    if (typeof message.content === 'string') return { role: message.role, content: message.content };
-    if (!message.content.some((part): boolean => part.type === 'input_file')) {
-      return { role: message.role, content: message.content.map((part): string => 'text' in part ? part.text : '').join('\n') };
-    }
-    return { role: message.role, content: message.content.map((part): Record<string, unknown> => part.type === 'input_file'
-      ? { type: 'file', file: { filename: part.filename, file_data: part.file_data } }
-      : { type: 'text', text: part.text }) };
+    return { role: 'tool', tool_call_id: item.call_id, content: item.output };
   });
 }
 function validateChoice(choice: OpenAIRequest['tool_choice'], tools: Tool[]): void {

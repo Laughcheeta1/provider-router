@@ -85,6 +85,46 @@ describe('HTTP inference adapters', (): void => {
     const adapter: OpenRouterAdapter = new OpenRouterAdapter((): string => 'synthetic-api-key', async (_url, init): Promise<Response> => { sent = JSON.parse(String(init?.body)); headers = init?.headers as Record<string, string>; return Response.json({ choices: [{ finish_reason: 'stop', message: { content: '{"balance":42}' } }], usage: { prompt_tokens: 11, completion_tokens: 8 } }); });
     const result: InferenceResult = await adapter.infer(input, target, AbortSignal.timeout(1000)); expect(result.content).toBe('{"balance":42}'); expect(sent).toMatchObject({ reasoning: { effort: 'low' }, messages: input.messages, response_format: input.response_format }); expect(headers.Authorization).toBe('Bearer synthetic-api-key');
   });
+  it('resolves the OpenRouter route for assistant reasoning and pins it on replay', async (): Promise<void> => {
+    const target: Connection = connection('openrouter_http');
+    const input: InferenceRequest = { ...request(target), model: 'anthropic/synthetic', session_id: uuid7() };
+    const resolved: string = 'anthropic/resolved';
+    const message: Record<string, unknown> = { role: 'assistant', content: 'First answer', reasoning_details: [{ type: 'reasoning.encrypted', data: 'synthetic-state' }] };
+    const sent: { payload: Record<string, unknown>; headers: Headers }[] = [];
+    const lookups: string[] = [];
+    const adapter: OpenRouterAdapter = new OpenRouterAdapter((): string => 'synthetic-key', async (url, init): Promise<Response> => {
+      if (!init?.method) {
+        lookups.push(String(url));
+        return Response.json({ data: { endpoints: [{ provider_name: 'Synthetic upstream', tag: 'synthetic' }, { provider_name: 'Different provider', tag: 'other' }] } });
+      }
+      sent.push({ payload: JSON.parse(String(init.body)), headers: new Headers(init.headers) });
+      return Response.json({ model: resolved, choices: [{ finish_reason: 'stop', message }], usage: { prompt_tokens: 14, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 7, cache_write_tokens: 4 } }, openrouter_metadata: { endpoints: { available: [{ selected: true, provider: 'Synthetic upstream' }] } } });
+    }, 'https://synthetic.example');
+    const first: InferenceResult = await adapter.infer(input, target, AbortSignal.timeout(1000));
+    expect(first.usage).toEqual({ input_tokens: 14, output_tokens: 3, cached_input_tokens: 7, cache_write_tokens: 4 });
+    expect(first.continuation).toEqual({ connection_id: target.id, model: input.model, state: { format: 'openrouter_chat', message, upstream: 'synthetic', resolved_model: resolved } });
+    const replay: InferenceRequest = { ...input, messages: [...input.messages, { role: 'assistant', content: first.content, continuation: first.continuation }] };
+    const second: InferenceResult = await adapter.infer(replay, target, AbortSignal.timeout(1000));
+    expect(second.continuation).toEqual(first.continuation);
+    expect(sent[0]?.headers.get('x-openrouter-metadata')).toBe('enabled');
+    expect(sent[1]?.payload).toMatchObject({
+      model: resolved, messages: [...input.messages, message],
+      provider: { require_parameters: true, only: ['synthetic'], allow_fallbacks: false },
+      session_id: input.session_id, cache_control: { type: 'ephemeral' },
+    });
+    expect(lookups).toEqual(['https://synthetic.example/models/anthropic/resolved/endpoints']);
+  });
+  it('omits OpenRouter continuation when the selected upstream name matches several tags', async (): Promise<void> => {
+    const target: Connection = connection('openrouter_http');
+    const adapter: OpenRouterAdapter = new OpenRouterAdapter((): string => 'synthetic-key', async (_url, init): Promise<Response> => {
+      if (init?.method === 'POST') return Response.json({ provider: 'Shared name', model: 'synthetic/model', choices: [{ finish_reason: 'stop', message: { content: 'Answer', reasoning: 'Synthetic reasoning' } }], usage: { prompt_tokens: 5, completion_tokens: 2 } });
+      return Response.json({ data: { endpoints: [{ provider_name: 'Shared name', tag: 'one' }, { provider_name: 'Shared name', tag: 'two' }] } });
+    }, 'https://synthetic.example');
+    const result: InferenceResult = await adapter.infer(request(target), target, AbortSignal.timeout(1000));
+    expect(result.content).toBe('Answer');
+    expect(result).not.toHaveProperty('continuation');
+    expect(result.usage).toEqual({ input_tokens: 5, output_tokens: 2 });
+  });
   it('uses native Codex Responses function items and requires an explicitly completed stream', async (): Promise<void> => {
     const target: Connection = connection('codex_http'); const input: InferenceRequest = { ...request(target), messages: [...request(target).messages, { role: 'assistant', content: '', tool_calls: [{ id: 'call1', type: 'function', function: { name: 'read_balance', arguments: '{"id":"a"}' } }] }, { role: 'tool', content: '{"balance":42}', tool_call_id: 'call1' }] };
     let sent: Record<string, unknown> = {};

@@ -40,7 +40,7 @@ it('migrates CLI identities and sends only caller input directly to the subscrip
     expect(answer).toMatchObject({ choices: [{ message: { content: 'Hello!' } }], usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 }, provider_router: { connection_id: id, method: 'codex_http' } });
     expect(received).toHaveLength(1);
     expect(received[0]!.url).toBe('https://chatgpt.com/backend-api/codex/responses');
-    expect(received[0]!.payload).toEqual({ model: model.id, instructions: '', input: [{ role: 'user', content: [{ type: 'input_text', text: 'Say hello.' }] }], tools: [], store: false, stream: true, reasoning: { effort: 'low' } });
+    expect(received[0]!.payload).toEqual({ model: model.id, instructions: '', input: [{ role: 'user', content: [{ type: 'input_text', text: 'Say hello.' }] }], tools: [], store: false, stream: true, include: ['reasoning.encrypted_content'], reasoning: { effort: 'low', summary: 'auto' } });
     expect(received[0]!.headers.get('Authorization')).toBe(`Bearer ${access}`);
     expect(received[0]!.headers.get('ChatGPT-Account-ID')).toBe('synthetic-account');
     expect(JSON.stringify(answer)).not.toContain(access);
