@@ -7,7 +7,7 @@ import { CodexAuth, ExistingCodexCredentials, codexAuthSettings, type CodexCrede
 import { CodexHttpAdapter, OpenRouterAdapter } from '../src/app/services/provider-service/providers/http-providers.ts';
 import { CodexCliAdapter, codexCatalog } from '../src/app/services/provider-service/providers/codex-cli.ts';
 import { uuid7 } from '../src/app/common/identity/identity.ts';
-import type { Connection, InferenceRequest, InferenceResult } from '../src/app/common/schemas/contracts.ts';
+import type { Connection, Continuation, InferenceRequest, InferenceResult, ProviderAdapter, ToolCall } from '../src/app/common/schemas/contracts.ts';
 const directories: string[] = [];
 afterEach(async (): Promise<void> => { await Promise.all(directories.splice(0).map((directory: string): Promise<void> => rm(directory, { recursive: true, force: true }))); });
 async function temporary(): Promise<string> { const directory: string = await mkdtemp(path.join(os.tmpdir(), 'router-provider-test-')); directories.push(directory); return directory; }
@@ -23,6 +23,79 @@ async function syntheticCodex(fetcher: typeof fetch): Promise<CodexHttpAdapter> 
   }, async (): Promise<Response> => Response.json({ access_token: 'rotated-synthetic-access' }), 'https://synthetic.example/oauth/token');
   return new CodexHttpAdapter(fetcher, 'https://synthetic.example', (): CodexAuth => auth);
 }
+
+const codexTextOutput: string = '[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Answer"}]}]';
+function codexCompletion(usage: string, output: string = codexTextOutput): string {
+  return `data: {"type":"response.completed","response":{"status":"completed","output":${output},"usage":${usage}}}\n\n`;
+}
+
+describe.each(['codex_http', 'openrouter_http'] as const)('%s completion and replay', (method): void => {
+  const isCodex: boolean = method === 'codex_http';
+  const inputField: string = isCodex ? 'input_tokens' : 'prompt_tokens';
+  const outputField: string = isCodex ? 'output_tokens' : 'completion_tokens';
+  const detailsField: string = isCodex ? 'input_tokens_details' : 'prompt_tokens_details';
+  const ordinaryUsage: string = `{"${inputField}":11,"${outputField}":2}`;
+
+  async function adapter(usage: string, onRequest?: (payload: unknown) => void): Promise<ProviderAdapter> {
+    const fetcher: typeof fetch = async (_url, init): Promise<Response> => {
+      onRequest?.(JSON.parse(String(init?.body)));
+      return new Response(isCodex ? codexCompletion(usage) : `{"choices":[{"finish_reason":"stop","message":{"content":"Answer"}}],"usage":${usage}}`);
+    };
+    return isCodex ? syntheticCodex(fetcher) : new OpenRouterAdapter((): string => 'synthetic-key', fetcher);
+  }
+
+  it.each([
+    ['large integer', '{"n":9007199254740992}', '{"n":9007199254740993}', false],
+    ['integer and decimal', '{"n":1}', '{"n":1.0}', false],
+    ['integer and exponent', '{"n":1}', '{"n":1e0}', false],
+    ['signed integer boundary', '{"n":-9223372036854775808}', '{"n":-9223372036854775809}', false],
+    ['unsigned integer boundary', '{"n":18446744073709551615}', '{"n":18446744073709551616}', false],
+    ['object key order', '{"a":{"id":9007199254740993,"name":"x"},"b":[1.0]}', '{"b":[1.0],"a":{"name":"x","id":9007199254740993}}', true],
+    ['float spellings', '{"n":1e0}', '{"n":1.0}', true],
+    ['native float rounding', '{"n":9007199254740993.0}', '{"n":9007199254740992.0}', false],
+    ['floating-point zero signs', '{"n":-0}', '{"n":0.0}', true],
+    ['a duplicate key with an invalid number', '{"n":1e999,"n":1}', '{"n":1}', false],
+    ['trailing invalid input', '{"n":1}x', '{"n":1}', false],
+  ] as const)('compares replay arguments with %s using native JSON semantics', async (_label, returned, replayed, matches): Promise<void> => {
+    const target: Connection = connection(method);
+    const input: InferenceRequest = request(target);
+    const call: ToolCall = { id: 'call-1', type: 'function', function: { name: 'lookup', arguments: returned } };
+    const codexCall: Record<string, string> = { type: 'function_call', call_id: call.id, name: call.function.name, arguments: returned };
+    const nativeMessage: Record<string, unknown> = { role: 'assistant', content: null, tool_calls: [call] };
+    const state: Continuation['state'] = isCodex ? { format: 'codex_responses', items: [codexCall] }
+      : { format: 'openrouter_chat', message: nativeMessage, upstream: 'synthetic', resolved_model: 'synthetic/resolved' };
+    input.messages.push({ role: 'assistant', content: null, tool_calls: [{ ...call, function: { ...call.function, arguments: replayed } }], continuation: { connection_id: target.id, model: input.model, state } }, { role: 'tool', tool_call_id: call.id, content: '42' });
+    const sent: unknown[] = [];
+    const provider: ProviderAdapter = await adapter(ordinaryUsage, (payload: unknown): void => { sent.push(payload); });
+    const result: Promise<InferenceResult> = provider.infer(input, target, AbortSignal.timeout(1000));
+    if (matches) {
+      await expect(result).resolves.toMatchObject({ content: 'Answer' });
+      expect(sent).toEqual([expect.objectContaining(isCodex ? { input: expect.arrayContaining([codexCall]) }
+        : { messages: expect.arrayContaining([nativeMessage]), model: 'synthetic/resolved', provider: { require_parameters: true, only: ['synthetic'], allow_fallbacks: false } })]);
+    } else {
+      await expect(result).rejects.toMatchObject({ status: 400, code: 'INVALID_HISTORY' });
+      expect(sent).toEqual([]);
+    }
+  });
+
+  it.each([
+    ['7.0', '4', { cache_write_tokens: 4 }],
+    ['0', '4e0', { cached_input_tokens: 0 }],
+    ['-0', '18446744073709551616', {}],
+  ] as const)('omits invalid cache counters independently (%s and %s)', async (cached, written, expected): Promise<void> => {
+    const target: Connection = connection(method);
+    const provider: ProviderAdapter = await adapter(`{"${inputField}":11,"${outputField}":2,"${detailsField}":{"cached_tokens":${cached},"cache_write_tokens":${written}}}`);
+    const result: InferenceResult = await provider.infer(request(target), target, AbortSignal.timeout(1000));
+    expect(result.usage).toEqual({ input_tokens: 11, output_tokens: 2, ...expected });
+  });
+
+  it.each([['11.0', '2'], ['11', '2e0'], ['-0', '2'], ['11', '18446744073709551616']] as const)(
+    'rejects usage with input %s and output %s when either token is outside u64', async (input, output): Promise<void> => {
+      const target: Connection = connection(method);
+      const provider: ProviderAdapter = await adapter(`{"${inputField}":${input},"${outputField}":${output}}`);
+      await expect(provider.infer(request(target), target, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 502, code: 'PROVIDER_RESPONSE_INVALID' });
+    });
+});
 describe('Codex subscription credentials', (): void => {
   it('refreshes once for simultaneous requests and preserves identity plus returned rotated tokens', async (): Promise<void> => {
     let stored: CodexCredentials = credentials(1); let exchanges: number = 0;
@@ -235,6 +308,79 @@ describe('HTTP inference adapters', (): void => {
     expect(result).not.toHaveProperty('continuation');
     expect(result.usage).toEqual({ input_tokens: 5, output_tokens: 2 });
   });
+  it('preserves OpenRouter tool metadata in continuation while returning normalized function calls', async (): Promise<void> => {
+    const target: Connection = connection('openrouter_http');
+    const call: ToolCall = { id: 'call-1', type: 'function', function: { name: 'lookup', arguments: '{}' } };
+    const rawCall: ToolCall & { provider_metadata: { signature: string } } = { ...call, provider_metadata: { signature: 'synthetic' } };
+    const adapter: OpenRouterAdapter = new OpenRouterAdapter((): string => 'synthetic-key', async (_url, init): Promise<Response> => {
+      if (!init?.method) return Response.json({ data: { endpoints: [{ tag: 'synthetic' }] } });
+      return Response.json({ provider: 'synthetic', model: 'synthetic/resolved', choices: [
+        { finish_reason: 'tool_calls', message: { tool_calls: [rawCall], reasoning: 'Synthetic reasoning' } },
+        { finish_reason: 'stop', message: { tool_calls: [null] } },
+      ], usage: { prompt_tokens: 5, completion_tokens: 2 } });
+    });
+    const result: InferenceResult = await adapter.infer(request(target), target, AbortSignal.timeout(1000));
+    expect(result.tool_calls).toEqual([call]);
+    expect(result.continuation?.state).toMatchObject({ format: 'openrouter_chat', message: { tool_calls: [rawCall] } });
+  });
+
+  it.each([{ type: 'output_text' }, { type: 'output_text', text: 5 }])('rejects malformed Codex output_text after valid text (%j)', async (invalid): Promise<void> => {
+    const target: Connection = connection('codex_http');
+    const output: string = JSON.stringify([{ type: 'message', content: [{ type: 'output_text', text: 'Answer' }, invalid] }]);
+    const adapter: CodexHttpAdapter = await syntheticCodex(async (): Promise<Response> => new Response(codexCompletion('{"input_tokens":5,"output_tokens":2}', output)));
+    await expect(adapter.infer(request(target), target, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 502, code: 'PROVIDER_RESPONSE_INVALID' });
+  });
+
+  it('accepts empty Codex output text and ignores unrecognized message parts', async (): Promise<void> => {
+    const target: Connection = connection('codex_http');
+    const output: string = '[{"type":"message","content":[{"type":"output_text","text":""},{"type":"future_part","text":42},null]}]';
+    const adapter: CodexHttpAdapter = await syntheticCodex(async (): Promise<Response> => new Response(codexCompletion('{"input_tokens":5,"output_tokens":2}', output)));
+    await expect(adapter.infer(request(target), target, AbortSignal.timeout(1000))).resolves.toMatchObject({ content: '', continuation: { state: { items: JSON.parse(output) } } });
+  });
+
+  it('reports the first Codex output error even when later parts and usage are malformed', async (): Promise<void> => {
+    const target: Connection = connection('codex_http');
+    const output: string = '[{"type":"message","content":[{"type":"refusal","text":false},{"type":"output_text","text":9}]}]';
+    const adapter: CodexHttpAdapter = await syntheticCodex(async (): Promise<Response> => new Response(codexCompletion('null', output)));
+    await expect(adapter.infer(request(target), target, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 422, code: 'PROVIDER_REFUSAL' });
+  });
+
+  it('uses the fallback Codex output position when an event index is a float', async (): Promise<void> => {
+    const target: Connection = connection('codex_http');
+    const wire: string = `data:\n${[
+      'data: {"type":"response.output_item.done","output_index":7.0,"item":{"type":"reasoning","encrypted_content":"synthetic"}}\n\n',
+      codexCompletion('{"input_tokens":5,"output_tokens":2}', '[]'),
+    ].join('')}`;
+    const adapter: CodexHttpAdapter = await syntheticCodex(async (): Promise<Response> => new Response(wire));
+    await expect(adapter.infer(request(target), target, AbortSignal.timeout(1000))).resolves.toMatchObject({ continuation: { state: { items: [{ type: 'reasoning', encrypted_content: 'synthetic' }] } } });
+  });
+
+  it('rejects malformed UTF-8 inside Codex event data', async (): Promise<void> => {
+    const target: Connection = connection('codex_http');
+    const wire: Buffer = Buffer.from(codexCompletion('{"input_tokens":5,"output_tokens":2}'));
+    wire[wire.indexOf('Answer')] = 0xff;
+    const adapter: CodexHttpAdapter = await syntheticCodex(async (): Promise<Response> => new Response(new Uint8Array(wire)));
+    await expect(adapter.infer(request(target), target, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 502, code: 'PROVIDER_RESPONSE_INVALID' });
+  });
+
+  it('preserves separate Codex input and assistant text blocks, including empty blocks', async (): Promise<void> => {
+    const target: Connection = connection('codex_http');
+    const input: InferenceRequest = { ...request(target), messages: [
+      { role: 'assistant', content: [{ type: 'text', text: 'Earlier' }, { type: 'text', text: '' }] },
+      { role: 'user', content: [{ type: 'text', text: 'First' }, { type: 'text', text: 'Second' }] },
+    ] };
+    const sent: unknown[] = [];
+    const adapter: CodexHttpAdapter = await syntheticCodex(async (_url, init): Promise<Response> => {
+      sent.push(JSON.parse(String(init?.body)));
+      return new Response(codexCompletion('{"input_tokens":5,"output_tokens":2}'));
+    });
+    await adapter.infer(input, target, AbortSignal.timeout(1000));
+    expect(sent).toEqual([expect.objectContaining({ input: [
+      { role: 'assistant', content: [{ type: 'output_text', text: 'Earlier' }, { type: 'output_text', text: '' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'First' }, { type: 'input_text', text: 'Second' }] },
+    ] })]);
+  });
+
   it('uses native Codex Responses function items and requires an explicitly completed stream', async (): Promise<void> => {
     const target: Connection = connection('codex_http'); const input: InferenceRequest = { ...request(target), messages: [...request(target).messages, { role: 'assistant', content: '', tool_calls: [{ id: 'call1', type: 'function', function: { name: 'read_balance', arguments: '{"id":"a"}' } }] }, { role: 'tool', content: '{"balance":42}', tool_call_id: 'call1' }] };
     let sent: Record<string, unknown> = {};

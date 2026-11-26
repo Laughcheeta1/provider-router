@@ -2,6 +2,8 @@
 import type { ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { inferenceSchema, jsonObjectSchema, messageSchema, RouterError, toolSchema, uuidSchema, type Connection, type InferenceRequest, type InferenceResult, type Message, type Tool } from '../../../common/schemas/contracts.ts';
+import { stringifyWireJson } from '../../../common/schemas/json-wire.ts';
+import { totalTokenCount, type TokenCount } from '../../../common/schemas/token-count.ts';
 import { uuid7 } from '../../../common/identity/identity.ts';
 const formatSchema = z.object({ type: z.literal('json_schema'), json_schema: z.object({ name: z.string(), schema: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).strict();
 const toolChoiceSchema = z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), function: z.object({ name: z.string() }) })]);
@@ -78,13 +80,14 @@ export function validateOpenAIResult(request: OpenAIRequest, result: InferenceRe
 export function writeOpenAI(response: ServerResponse, request: OpenAIRequest, result: InferenceResult): void {
   const created: number = Math.floor(Date.now() / 1000);
   const provenance: Record<string, unknown> = { provider: result.provider, method: result.method, connection_id: request.inference.connection_id, model: result.model, ...(result.reasoning_effort ? { reasoning_effort: result.reasoning_effort } : {}) };
-  const { cached_input_tokens, cache_write_tokens } = result.usage;
-  const cacheDetails: Record<string, number> = {};
+  const { input_tokens, output_tokens, cached_input_tokens, cache_write_tokens } = result.usage;
+  const total: TokenCount = totalTokenCount(input_tokens, output_tokens);
+  const cacheDetails: Record<string, TokenCount> = {};
   if (cached_input_tokens !== undefined) cacheDetails.cached_tokens = cached_input_tokens;
   if (cache_write_tokens !== undefined) cacheDetails.cache_write_tokens = cache_write_tokens;
   if (request.surface === 'chat') {
     const id: string = `chatcmpl-${result.request_id}`;
-    const usage: Record<string, unknown> = { prompt_tokens: result.usage.input_tokens, completion_tokens: result.usage.output_tokens, total_tokens: result.usage.input_tokens + result.usage.output_tokens, prompt_tokens_details: cacheDetails };
+    const usage: Record<string, unknown> = { prompt_tokens: input_tokens, completion_tokens: output_tokens, total_tokens: total, prompt_tokens_details: cacheDetails };
     const message: Record<string, unknown> = { role: 'assistant', content: result.content || null, ...(result.tool_calls.length ? { tool_calls: result.tool_calls } : {}) };
     const finish: string = result.tool_calls.length ? 'tool_calls' : 'stop';
     if (!request.stream) { json(response, { id, object: 'chat.completion', created, model: request.model, choices: [{ index: 0, message, finish_reason: finish, logprobs: null }], usage, provider_router: provenance }); return; }
@@ -101,7 +104,7 @@ export function writeOpenAI(response: ServerResponse, request: OpenAIRequest, re
   const id: string = `resp_${result.request_id}`;
   const output: Record<string, unknown>[] = result.tool_calls.map((call): Record<string, unknown> => ({ type: 'function_call', id: `fc_${uuid7()}`, call_id: call.id, name: call.function.name, arguments: call.function.arguments, status: 'completed' }));
   if (result.content) output.unshift({ type: 'message', id: `msg_${uuid7()}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: result.content, annotations: [], logprobs: [] }] });
-  const usage: Record<string, unknown> = { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens, total_tokens: result.usage.input_tokens + result.usage.output_tokens, ...(Object.keys(cacheDetails).length ? { input_tokens_details: cacheDetails } : {}) };
+  const usage: Record<string, unknown> = { input_tokens, output_tokens, total_tokens: total, ...(Object.keys(cacheDetails).length ? { input_tokens_details: cacheDetails } : {}) };
   const object: Record<string, unknown> = { id, object: 'response', created_at: created, status: 'completed', error: null, incomplete_details: null, model: request.model, output, usage, parallel_tool_calls: request.parallel_tool_calls, tool_choice: typeof request.tool_choice === 'object' ? { type: 'function', name: request.tool_choice.name } : request.tool_choice, tools: request.tools.map((tool: Tool) => ({ type: 'function', ...tool.function })), metadata: {}, store: false, provider_router: provenance };
   if (!request.stream) { json(response, object); return; }
   sseHeaders(response);
@@ -155,6 +158,6 @@ function validateChoice(choice: OpenAIRequest['tool_choice'], tools: Tool[]): vo
   if (choice === 'required' && !tools.length) throw new RouterError('INVALID_TOOL_CHOICE', 'Required tool choice needs at least one function.');
   if (typeof choice === 'object' && !tools.some((tool: Tool): boolean => tool.function.name === choice.name)) throw new RouterError('INVALID_TOOL_CHOICE', 'The selected function is not present in tools.');
 }
-function json(response: ServerResponse, body: unknown): void { response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(body)); }
+function json(response: ServerResponse, body: unknown): void { response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(stringifyWireJson(body)); }
 function sseHeaders(response: ServerResponse): void { response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); }
-function sse(response: ServerResponse, data: unknown, event?: string): void { response.write(`${event ? `event: ${event}\n` : ''}data: ${JSON.stringify(data)}\n\n`); }
+function sse(response: ServerResponse, data: unknown, event?: string): void { response.write(`${event ? `event: ${event}\n` : ''}data: ${stringifyWireJson(data)}\n\n`); }

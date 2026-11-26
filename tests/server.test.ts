@@ -9,16 +9,16 @@ import { startRouter, validateNetwork, type ListeningRouter } from '../src/app/p
 import { uuid7 } from '../src/app/common/identity/identity.ts';
 import type { Connection, Continuation, InferenceRequest, InferenceResult, Message, Model, ProviderAdapter, Tool } from '../src/app/common/schemas/contracts.ts';
 import { CodexAuth, type CodexCredentials } from '../src/app/services/provider-service/providers/codex-auth.ts';
-import { CodexHttpAdapter } from '../src/app/services/provider-service/providers/http-providers.ts';
+import { CodexHttpAdapter, OpenRouterAdapter } from '../src/app/services/provider-service/providers/http-providers.ts';
 const directories: string[] = [];
 const listeners: ListeningRouter[] = [];
 const model: Model = { id: 'test-model', name: 'Synthetic model', reasoning_efforts: ['low', 'high'], default_reasoning_effort: 'low', context_window: 32000, max_output_tokens: 4000, tools: true, structured_output: true, input_modalities: ['text'] };
 const cipher: SecretCipher = { encrypt: (value: string): Buffer => Buffer.from(`encrypted:${value}`).reverse(), decrypt: (value: Buffer): string => Buffer.from(value).reverse().toString().slice(10) };
 afterEach(async (): Promise<void> => { await Promise.all(listeners.splice(0).map((item: ListeningRouter): Promise<void> => item.close())); await Promise.all(directories.splice(0).map((directory: string): Promise<void> => rm(directory, { recursive: true, force: true }))); });
-async function fixture(infer?: ProviderAdapter['infer'], requireApiKey: boolean = true, browserOrigins: string[] = []): Promise<{ store: RouterStore; listener: ListeningRouter; token: string; client_id: string; connection: Connection; directory: string }> {
+async function fixture(infer?: ProviderAdapter['infer'], requireApiKey: boolean = true, browserOrigins: string[] = [], method: Connection['method'] = 'codex_http'): Promise<{ store: RouterStore; listener: ListeningRouter; token: string; client_id: string; connection: Connection; directory: string }> {
   const directory: string = await mkdtemp(path.join(os.tmpdir(), 'router-test-')); directories.push(directory);
   const store: RouterStore = await RouterStore.open(directory, cipher);
-  const connection: Connection = { id: uuid7(), name: 'Personal subscription', method: 'codex_http', exposed: true, models: [model] };
+  const connection: Connection = { id: uuid7(), name: 'Personal subscription', method, exposed: true, models: [model] };
   await store.saveConnection(connection, 'upstream-secret');
   const client: { id: string; token: string } = await store.createClient('Example application');
   const adapter: ProviderAdapter = { models: async (): Promise<Model[]> => [model], infer: infer || (async (request: InferenceRequest): Promise<InferenceResult> => ({ request_id: request.request_id, content: '{"answer":42}', tool_calls: [], usage: { input_tokens: 20, output_tokens: 8 }, provider: 'codex', method: 'codex_http', model: request.model, reasoning_effort: request.reasoning_effort })) };
@@ -34,6 +34,58 @@ function syntheticCodex(fetcher: typeof fetch): CodexHttpAdapter {
   }, async (): Promise<never> => { throw new Error('Unexpected credential refresh.'); }));
 }
 describe('Provider Router API', (): void => {
+  it.each(['codex_http', 'openrouter_http'] as const)('keeps opaque %s state numbers intact across a client round trip', async (method): Promise<void> => {
+    const requests: string[] = [];
+    const provider: ProviderAdapter = method === 'codex_http' ? syntheticCodex(async (_url, init): Promise<Response> => {
+      requests.push(String(init?.body));
+      return new Response([
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"state-1","type":"reasoning","encrypted_content":"synthetic","sequence":9007199254740993}}\n\n',
+        'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Answer"}]}}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[{"id":"state-1","score":7.0}],"usage":{"input_tokens":2,"output_tokens":1}}}\n\n',
+      ].join(''));
+    }) : new OpenRouterAdapter((): string => 'synthetic-key', async (_url, init): Promise<Response> => {
+      if (!init?.method) return Response.json({ data: { endpoints: [{ tag: 'synthetic' }] } });
+      requests.push(String(init.body));
+      return new Response('{"provider":"synthetic","model":"synthetic/resolved","choices":[{"finish_reason":"stop","message":{"content":"Answer","reasoning_details":{"sequence":9007199254740993,"score":7.0}}}],"usage":{"prompt_tokens":2,"completion_tokens":1}}');
+    });
+    const { listener, token, connection } = await fixture(provider.infer.bind(provider), true, [], method);
+    const input: InferenceRequest = request(connection);
+    const first: Response = await post(listener.endpoint, token, input);
+    expect(first.status).toBe(200);
+    const wire: string = await first.text();
+    expect(wire).toContain('"sequence":9007199254740993');
+    expect(wire).toContain('"score":7.0');
+    const result: InferenceResult = JSON.parse(wire);
+    const retry: InferenceRequest = { ...input, request_id: uuid7(), messages: [...input.messages, { role: 'assistant', content: 'Answer', continuation: result.continuation }] };
+    // Supply the original JSON numeric tokens that a client forwarding opaque state would retain.
+    const body: string = JSON.stringify(retry).replace('"sequence":9007199254740992', '"sequence":9007199254740993').replace('"score":7', '"score":7.0');
+    const replay: Response = await fetch(`${listener.endpoint}/v1/inference`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body });
+    expect(replay.status).toBe(200);
+    expect(requests[1]).toContain('"sequence":9007199254740993');
+    expect(requests[1]).toContain('"score":7.0');
+  });
+
+  it('writes exact u64 usage and saturates OpenAI totals across JSON and SSE', async (): Promise<void> => {
+    const adapter: CodexHttpAdapter = syntheticCodex(async (): Promise<Response> => new Response(
+      'data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Answer"}]}],"usage":{"input_tokens":18446744073709551615,"output_tokens":2,"input_tokens_details":{"cached_tokens":9007199254740993,"cache_write_tokens":7.0}}}}\n\n',
+    ));
+    const { listener, token, connection } = await fixture(adapter.infer.bind(adapter));
+    const input: InferenceRequest = request(connection);
+    const selected: string = `${connection.id}/${input.model}`;
+    const surfaces: { path: string; body: unknown; counts: string[] }[] = [
+      { path: '/v1/inference', body: input, counts: ['"input_tokens":18446744073709551615', '"cached_input_tokens":9007199254740993'] },
+      { path: '/v1/chat/completions', body: { model: selected, messages: input.messages, stream: true, stream_options: { include_usage: true } }, counts: ['"prompt_tokens":18446744073709551615', '"cached_tokens":9007199254740993', '"total_tokens":18446744073709551615'] },
+      { path: '/v1/responses', body: { model: selected, input: 'Question' }, counts: ['"input_tokens":18446744073709551615', '"cached_tokens":9007199254740993', '"total_tokens":18446744073709551615'] },
+    ];
+    for (const { path, body, counts } of surfaces) {
+      const response: Response = await post(listener.endpoint, token, body, path);
+      expect(response.status).toBe(200);
+      const wire: string = await response.text();
+      for (const count of counts) expect(wire).toContain(count);
+      expect(wire).not.toContain('cache_write_tokens');
+    }
+  });
+
   it('returns ordered Codex state and cache usage, then replays it with the tool result and session', async (): Promise<void> => {
     const reasoning: Record<string, unknown> = { type: 'reasoning', id: 'reasoning-1', encrypted_content: 'synthetic-state' };
     const message: Record<string, unknown> = { type: 'message', id: 'message-1', role: 'assistant', content: [{ type: 'output_text', text: 'Checking the value.' }] };

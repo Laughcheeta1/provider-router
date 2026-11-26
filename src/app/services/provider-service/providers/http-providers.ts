@@ -1,30 +1,34 @@
 /** Stateless HTTP inference adapters; application tools are never executed here. */
-import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { resolveWslCredentialHome } from './wsl-codex.ts';
 import { CodexAuth, ExistingCodexCredentials, codexHome } from './codex-auth.ts';
 import { codexCatalog } from './codex-cli.ts';
-import { jsonObjectSchema, RouterError, toolCallSchema, type Connection, type Continuation, type InferenceRequest, type InferenceResult, type Message, type Model, type ProviderAdapter, type ToolCall } from '../../../common/schemas/contracts.ts';
+import { parseNativeProviderJson, replayArgumentsEqual } from './native-json.ts';
+import { copyNumberSources, numberSource, stringifyWireJson } from '../../../common/schemas/json-wire.ts';
+import { MAX_U64, tokenCount } from '../../../common/schemas/token-count.ts';
+import { completionToolCallSchema, providerStateValueSchema, RouterError, type Connection, type Continuation, type InferenceRequest, type InferenceResult, type Message, type Model, type ProviderAdapter, type ToolCall } from '../../../common/schemas/contracts.ts';
 
 const OPENROUTER_URL: string = 'https://openrouter.ai/api/v1';
 const CODEX_URL: string = 'https://chatgpt.com/backend-api/codex';
 const MAX_PROVIDER_BYTES: number = 16_777_216;
-const number: z.ZodNumber = z.number().int().nonnegative();
+const SSE_DATA_PREFIX: Buffer = Buffer.from('data:');
+const SSE_NEWLINE: Buffer = Buffer.from('\n');
+const SSE_DONE: Buffer = Buffer.from('[DONE]');
 const chatDecoder = z.object({
-  choices: z.array(z.object({ finish_reason: z.string().nullish(), message: z.object({ content: z.string().nullish(), tool_calls: z.array(toolCallSchema).nullish(), reasoning_details: z.unknown().optional(), reasoning: z.unknown().optional() }) })).min(1),
-  usage: z.object({ prompt_tokens: number, completion_tokens: number, prompt_tokens_details: z.unknown().optional() }),
+  choices: z.array(z.object({ finish_reason: z.string().nullish(), message: z.object({ content: z.string().nullish(), tool_calls: z.array(providerStateValueSchema).nullish(), reasoning_details: z.unknown().optional(), reasoning: z.unknown().optional() }) })).min(1),
+  usage: z.unknown(),
   provider: z.string().nullish(), model: z.string().nullish(), openrouter_metadata: z.unknown().optional(),
 });
 type OpenRouterCompletion = z.infer<typeof chatDecoder>;
 type OpenRouterState = Extract<Continuation['state'], { format: 'openrouter_chat' }>;
-const cacheDetailsSchema = z.object({ cached_tokens: number.optional().catch(undefined), cache_write_tokens: number.optional().catch(undefined) });
-const codexOutputSchema = z.object({ status: z.literal('completed'), output: z.array(z.json()), usage: z.object({ input_tokens: number, output_tokens: number, input_tokens_details: z.unknown().optional() }) });
+const providerToolCalls = z.array(completionToolCallSchema);
 
 /** Normalize OpenRouter's published capabilities instead of inferring efforts from model names. */
 export class OpenRouterAdapter implements ProviderAdapter {
   constructor(private readonly secret: (id: string) => string | undefined, private readonly fetcher: typeof fetch = fetch, private readonly base: string = OPENROUTER_URL) {}
 
   async infer(request: InferenceRequest, connection: Connection, signal: AbortSignal): Promise<InferenceResult> {
+    const headers: Record<string, string> = this.headers(connection);
     const { messages, route } = openRouterHistory(request.messages);
     const model: string = route?.resolved_model ?? request.model;
     const payload: Record<string, unknown> = {
@@ -39,10 +43,10 @@ export class OpenRouterAdapter implements ProviderAdapter {
       ...(request.tool_choice ? { tool_choice: request.tool_choice } : {}),
       ...(request.parallel_tool_calls !== undefined ? { parallel_tool_calls: request.parallel_tool_calls } : {}),
     };
-    const headers: Record<string, string> = this.headers(connection);
-    const response: Response = await providerTransport(this.fetcher(`${this.base}/chat/completions`, { method: 'POST', redirect: 'error', headers: { ...headers, 'X-OpenRouter-Metadata': 'enabled' }, body: JSON.stringify(payload), signal }), signal);
+    const response: Response = await providerTransport(this.fetcher(`${this.base}/chat/completions`, { method: 'POST', redirect: 'error', headers: { ...headers, 'X-OpenRouter-Metadata': 'enabled' }, body: stringifyWireJson(payload), signal }), signal);
     requireSuccess(response);
     const decoded: OpenRouterCompletion = await openRouterCompletion(response, signal);
+    const usage: InferenceResult['usage'] = providerUsage(decoded.usage, 'prompt_tokens', 'completion_tokens', 'prompt_tokens_details');
     const choice: OpenRouterCompletion['choices'][number] = decoded.choices[0]!;
     if (choice.finish_reason !== 'stop' && choice.finish_reason !== 'tool_calls') throw incomplete();
     const { reasoning_details, reasoning, content, tool_calls } = choice.message;
@@ -55,12 +59,14 @@ export class OpenRouterAdapter implements ProviderAdapter {
           ...(tool_calls != null ? { tool_calls } : {}),
           ...(reasoning_details != null ? { reasoning_details } : { reasoning }),
         };
+        copyNumberSources(message, choice.message);
         continuation = { connection_id: connection.id, model: request.model, state: { format: 'openrouter_chat', message, upstream, resolved_model: decoded.model } };
       }
     }
+    const calls: z.ZodSafeParseResult<ToolCall[]> = providerToolCalls.safeParse(tool_calls ?? []);
+    if (!calls.success) throw new RouterError('INVALID_COMPLETION', 'The provider returned an invalid inference response.', 502);
     return {
-      request_id: request.request_id, content: content ?? '', tool_calls: tool_calls ?? [],
-      usage: { input_tokens: decoded.usage.prompt_tokens, output_tokens: decoded.usage.completion_tokens, ...cacheUsage(decoded.usage.prompt_tokens_details) },
+      request_id: request.request_id, content: content ?? '', tool_calls: calls.data, usage,
       provider: 'openrouter', method: 'openrouter_http', model: request.model,
       ...(request.reasoning_effort ? { reasoning_effort: request.reasoning_effort } : {}),
       ...(continuation ? { continuation } : {}),
@@ -129,7 +135,7 @@ export class CodexHttpAdapter implements ProviderAdapter {
       }
       const type: string = message.role === 'assistant' ? 'output_text' : 'input_text';
       const text: string = textContent(message.content);
-      const content: Record<string, unknown>[] = Array.isArray(message.content) && message.content.some((part): boolean => part.type === 'image_url')
+      const content: Record<string, unknown>[] = Array.isArray(message.content)
         ? message.content.map((part): Record<string, unknown> => part.type === 'image_url'
           ? { type: 'input_image', image_url: (part.image_url as { url: string }).url }
           : { type, text: part.text })
@@ -151,28 +157,34 @@ export class CodexHttpAdapter implements ProviderAdapter {
     if (request.response_format) payload.text = { format: { type: 'json_schema', ...request.response_format.json_schema } };
     // Codex uses the same session identity for the Responses header and cache key.
     const headers: Record<string, string> = request.session_id ? { 'session-id': request.session_id } : {};
-    const response: Response = await this.request(connection, '/responses', { method: 'POST', body: JSON.stringify(payload), headers, signal });
+    const response: Response = await this.request(connection, '/responses', { method: 'POST', body: stringifyWireJson(payload), headers, signal });
     const completed: Record<string, unknown> = await completedResponse(response, signal);
     if (completed.status !== 'completed') throw incomplete();
-    const decoded: z.infer<typeof codexOutputSchema> = decodeProviderResponse(codexOutputSchema, completed);
+    const output: z.infer<typeof providerStateValueSchema>[] = decodeProviderResponse(z.array(providerStateValueSchema), completed.output);
     const calls: ToolCall[] = [];
     const texts: string[] = [];
-    for (const item of decoded.output) {
+    for (const item of output) {
       const type: unknown = object(item)?.type;
       if (type === 'function_call') {
         const call: { call_id: string; name: string; arguments: string } = decodeProviderResponse(z.object({ call_id: z.string(), name: z.string(), arguments: z.string() }), item);
         calls.push({ id: call.call_id, type: 'function', function: { name: call.name, arguments: call.arguments } });
       } else if (type === 'message') {
-        const message: { content: { type: string; text?: string }[] } = decodeProviderResponse(z.object({ content: z.array(z.object({ type: z.string(), text: z.string().optional() })) }), item);
-        for (const part of message.content) { if (part.type === 'output_text' && part.text) texts.push(part.text); if (part.type === 'refusal') throw new RouterError('PROVIDER_REFUSAL', 'The provider declined this request.', 422); }
+        const message: { content: unknown[] } = decodeProviderResponse(z.object({ content: z.array(z.unknown()) }), item);
+        for (const value of message.content) {
+          const part: Record<string, unknown> | undefined = object(value);
+          if (part?.type === 'refusal') throw new RouterError('PROVIDER_REFUSAL', 'The provider declined this request.', 422);
+          if (part?.type !== 'output_text') continue;
+          if (typeof part.text !== 'string') throw invalidProviderResponse();
+          texts.push(part.text);
+        }
       } else if (type !== 'reasoning') throw new RouterError('UNSUPPORTED_PROVIDER_OUTPUT', 'The subscription returned an unsupported output item.', 502);
     }
     return {
       request_id: request.request_id, content: texts.join(''), tool_calls: calls,
-      usage: { input_tokens: decoded.usage.input_tokens, output_tokens: decoded.usage.output_tokens, ...cacheUsage(decoded.usage.input_tokens_details) },
+      usage: providerUsage(completed.usage, 'input_tokens', 'output_tokens', 'input_tokens_details'),
       provider: 'codex', method: 'codex_http', model: request.model,
       ...(request.reasoning_effort ? { reasoning_effort: request.reasoning_effort } : {}),
-      continuation: { connection_id: connection.id, model: request.model, state: { format: 'codex_responses', items: decoded.output } },
+      continuation: { connection_id: connection.id, model: request.model, state: { format: 'codex_responses', items: output } },
     };
   }
 
@@ -201,13 +213,27 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function cacheUsage(details: unknown): Pick<InferenceResult['usage'], 'cached_input_tokens' | 'cache_write_tokens'> {
-  const parsed: z.ZodSafeParseResult<z.infer<typeof cacheDetailsSchema>> = cacheDetailsSchema.safeParse(details);
-  if (!parsed.success) return {};
-  const { cached_tokens, cache_write_tokens } = parsed.data;
+function unsignedField(value: unknown, name: string): bigint | undefined {
+  const fields: Record<string, unknown> | undefined = object(value);
+  const field: unknown = fields?.[name];
+  if (!fields || typeof field !== 'number') return undefined;
+  const source: string = numberSource(fields, name, field);
+  if (!/^\d{1,20}$/.test(source)) return undefined;
+  const integer: bigint = BigInt(source);
+  return integer <= MAX_U64 ? integer : undefined;
+}
+
+function providerUsage(value: unknown, input: string, output: string, detailsField: string): InferenceResult['usage'] {
+  const inputTokens: bigint | undefined = unsignedField(value, input);
+  const outputTokens: bigint | undefined = unsignedField(value, output);
+  if (inputTokens === undefined || outputTokens === undefined) throw invalidProviderResponse();
+  const details: unknown = object(value)?.[detailsField];
+  const cached: bigint | undefined = unsignedField(details, 'cached_tokens');
+  const written: bigint | undefined = unsignedField(details, 'cache_write_tokens');
   return {
-    ...(cached_tokens !== undefined ? { cached_input_tokens: cached_tokens } : {}),
-    ...(cache_write_tokens !== undefined ? { cache_write_tokens } : {}),
+    input_tokens: tokenCount(inputTokens), output_tokens: tokenCount(outputTokens),
+    ...(cached !== undefined ? { cached_input_tokens: tokenCount(cached) } : {}),
+    ...(written !== undefined ? { cache_write_tokens: tokenCount(written) } : {}),
   };
 }
 
@@ -222,12 +248,8 @@ function invalidContinuation(): RouterError {
 }
 
 function sameCall(call: ToolCall, id: unknown, name: unknown, args: unknown): boolean {
-  if (call.id !== id || call.function.name !== name || typeof args !== 'string') return false;
-  try {
-    const expected: unknown = JSON.parse(call.function.arguments);
-    const actual: unknown = JSON.parse(args);
-    return isDeepStrictEqual(expected, actual);
-  } catch { return false; }
+  return call.id === id && call.function.name === name && typeof args === 'string'
+    && replayArgumentsEqual(call.function.arguments, args);
 }
 
 function codexHistory(message: Message, state: Continuation['state']): Record<string, unknown>[] {
@@ -324,9 +346,11 @@ async function providerTransport<T>(operation: Promise<T>, signal?: AbortSignal 
   }
 }
 
-function parseProviderJson(text: string, reviver?: Parameters<typeof JSON.parse>[1]): unknown {
-  try { return JSON.parse(text, reviver); }
-  catch { throw invalidProviderResponse(); }
+function parseProviderJson(bytes: Uint8Array): unknown {
+  try {
+    const text: string = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    return parseNativeProviderJson(text);
+  } catch { throw invalidProviderResponse(); }
 }
 
 function decodeProviderResponse<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -336,26 +360,23 @@ function decodeProviderResponse<T>(schema: z.ZodType<T>, value: unknown): T {
 }
 
 async function openRouterCompletion(response: Response, signal: AbortSignal): Promise<OpenRouterCompletion> {
-  const statuses: WeakMap<object, number> = new WeakMap();
-  const value: unknown = await providerJson(response, signal, function (this: object, key: string, value: unknown, context?: { source: string }): unknown {
-    // Native distinguishes integer JSON tokens from decimals and exponents such as 429.0 and 4.29e2.
-    if (key === 'code' && typeof value === 'number' && context && /^[45]\d{2}$/.test(context.source)) statuses.set(this, value);
-    return value;
-  });
+  const value: unknown = await providerJson(response, signal);
   const completion: Record<string, unknown> | undefined = object(value);
   const choices: unknown = completion?.choices;
   const firstChoice: unknown = Array.isArray(choices) ? choices[0] : undefined;
   // Inspect the selected error before requiring a complete choice or usage.
   const error: unknown = completion?.error ?? object(firstChoice)?.error;
   if (error != null) {
-    const details: Record<string, unknown> | undefined = object(error);
-    const status: number | undefined = details && statuses.get(details);
-    throw status === undefined ? incomplete() : statusFailure(status);
+    const status: bigint | undefined = unsignedField(error, 'code');
+    throw status !== undefined && status >= 400n && status <= 599n ? statusFailure(Number(status)) : incomplete();
   }
-  return decodeProviderResponse(chatDecoder, value);
+  const decoded: OpenRouterCompletion = decodeProviderResponse(chatDecoder, value);
+  const rawMessage: Record<string, unknown> | undefined = object(object(firstChoice)?.message);
+  if (rawMessage) copyNumberSources(decoded.choices[0]!.message, rawMessage);
+  return decoded;
 }
 
-async function providerJson(response: Response, signal: AbortSignal, reviver?: Parameters<typeof JSON.parse>[1]): Promise<unknown> {
+async function providerJson(response: Response, signal: AbortSignal): Promise<unknown> {
   let received: number = 0;
   const body: ReadableStream<Uint8Array> | undefined = response.body?.pipeThrough(new TransformStream({
     transform(chunk: Uint8Array, controller: TransformStreamDefaultController<Uint8Array>): void {
@@ -364,8 +385,8 @@ async function providerJson(response: Response, signal: AbortSignal, reviver?: P
       controller.enqueue(chunk);
     },
   }));
-  const text: string = await providerTransport(new Response(body).text(), signal);
-  return parseProviderJson(text, reviver);
+  const bytes: ArrayBuffer = await providerTransport(new Response(body).arrayBuffer(), signal);
+  return parseProviderJson(new Uint8Array(bytes));
 }
 
 function providerOutputLimit(): RouterError {
@@ -384,9 +405,9 @@ function codexStreamFailure(error: unknown): RouterError {
 async function completedResponse(response: Response, signal: AbortSignal): Promise<Record<string, unknown>> {
   if (!response.body) throw incomplete();
   const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
-  const decoder: TextDecoder = new TextDecoder();
-  const completedItems: Map<number, Record<string, unknown>> = new Map();
-  let buffer: string = '';
+  const completedItems: Map<bigint, Record<string, unknown>> = new Map();
+  const lineParts: Buffer[] = [];
+  const dataParts: Buffer[] = [];
   let received: number = 0;
   try {
     while (true) {
@@ -395,12 +416,29 @@ async function completedResponse(response: Response, signal: AbortSignal): Promi
       if (frame.done) break;
       received += frame.value.length;
       if (received > MAX_PROVIDER_BYTES) throw providerOutputLimit();
-      buffer += decoder.decode(frame.value, { stream: true });
-      let separator: RegExpExecArray | null;
-      while ((separator = /\r?\n\r?\n/.exec(buffer))) {
-        const block: string = buffer.slice(0, separator.index); buffer = buffer.slice(separator.index + separator[0].length);
-        const data: string = block.split(/\r?\n/).filter((line: string): boolean => line.startsWith('data:')).map((line: string): string => line.slice(5).trimStart()).join('\n');
-        if (!data || data === '[DONE]') continue;
+      // Keep comments and incomplete lines in bytes so only complete data events are decoded as JSON.
+      const chunk: Buffer = Buffer.from(frame.value.buffer, frame.value.byteOffset, frame.value.byteLength);
+      for (let start: number = 0; start < chunk.length;) {
+        const end: number = chunk.indexOf(10, start);
+        if (end === -1) { lineParts.push(chunk.subarray(start)); break; }
+        const segment: Buffer = chunk.subarray(start, end);
+        let line: Buffer = lineParts.length ? Buffer.concat([...lineParts, segment]) : segment;
+        lineParts.length = 0;
+        start = end + 1;
+        if (line.at(-1) === 13) line = line.subarray(0, -1);
+        if (line.length) {
+          if (line.subarray(0, SSE_DATA_PREFIX.length).equals(SSE_DATA_PREFIX)) {
+            if (dataParts.length) dataParts.push(SSE_NEWLINE);
+            const part: Buffer = line.subarray(line[SSE_DATA_PREFIX.length] === 32 ? SSE_DATA_PREFIX.length + 1 : SSE_DATA_PREFIX.length);
+            if (part.length) dataParts.push(part);
+          }
+          continue;
+        }
+
+        if (!dataParts.length) continue;
+        const data: Buffer = Buffer.concat(dataParts);
+        dataParts.length = 0;
+        if (data.equals(SSE_DONE)) continue;
         const event: Record<string, unknown> | undefined = object(parseProviderJson(data));
         if (event?.type === 'response.failed') throw codexStreamFailure(object(event.response)?.error);
         if (event?.type === 'error') throw codexStreamFailure(event);
@@ -411,8 +449,7 @@ async function completedResponse(response: Response, signal: AbortSignal): Promi
         }
         if (event?.type === 'response.output_item.done') {
           const item: Record<string, unknown> | undefined = object(event.item);
-          const index: z.ZodSafeParseResult<number> = number.safeParse(event.output_index);
-          if (item) completedItems.set(index.success ? index.data : completedItems.size, item);
+          if (item) completedItems.set(unsignedField(event, 'output_index') ?? BigInt(completedItems.size), item);
         }
       }
     }
@@ -420,13 +457,13 @@ async function completedResponse(response: Response, signal: AbortSignal): Promi
   } finally { await reader.cancel().catch((): void => {}); reader.releaseLock(); }
 }
 
-function mergeCodexItems(response: Record<string, unknown>, completed: Map<number, Record<string, unknown>>): Record<string, unknown> {
+function mergeCodexItems(response: Record<string, unknown>, completed: Map<bigint, Record<string, unknown>>): Record<string, unknown> {
   const terminal: unknown[] = Array.isArray(response.output) ? response.output : [];
   if (!completed.size || completed.size < terminal.length) return response;
   const items: Record<string, unknown>[] = [];
   // Prefer indexed completion events only when they contain a contiguous output sequence.
   for (let index: number = 0; index < completed.size; index++) {
-    const item: Record<string, unknown> | undefined = completed.get(index);
+    const item: Record<string, unknown> | undefined = completed.get(BigInt(index));
     if (!item) return response;
     items.push(item);
   }
@@ -434,7 +471,13 @@ function mergeCodexItems(response: Record<string, unknown>, completed: Map<numbe
     const item: Record<string, unknown> | undefined = object(value);
     if (typeof item?.id !== 'string') continue;
     const index: number = items.findIndex((entry: Record<string, unknown>): boolean => entry.id === item.id);
-    if (index >= 0) items[index] = { ...items[index], ...item };
+    if (index >= 0) {
+      const current: Record<string, unknown> = items[index]!;
+      const merged: Record<string, unknown> = { ...current, ...item };
+      copyNumberSources(merged, current);
+      copyNumberSources(merged, item);
+      items[index] = merged;
+    }
   }
   return { ...response, output: items };
 }

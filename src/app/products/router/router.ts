@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { ZodError } from 'zod';
 import { inferenceSchema, PROTOCOL_VERSION, RouterError, type Connection, type InferenceRequest, type InferenceResult, type Method, type ProviderAdapter, type ProviderDescriptor } from '../../common/schemas/contracts.ts';
+import { parseWireJson, stringifyWireJson } from '../../common/schemas/json-wire.ts';
 import type { RouterRepository } from './repository/settings/contract.ts';
 import type { Client, NetworkSettings } from './schemas/state.ts';
 import { buildInferenceUseCase } from './dependencies.ts';
@@ -102,10 +103,10 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     if (bytes > 36 * 1024 * 1024) throw new RouterError('REQUEST_TOO_LARGE', 'The request exceeds the supported size.', 413);
     chunks.push(buffer);
   }
-  try { return JSON.parse(Buffer.concat(chunks).toString()) as unknown; }
+  try { return parseWireJson(Buffer.concat(chunks).toString()); }
   catch { throw new RouterError('INVALID_JSON', 'The request body must contain valid JSON.'); }
 }
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
-  response.end(JSON.stringify(body));
+  response.end(stringifyWireJson(body));
 }

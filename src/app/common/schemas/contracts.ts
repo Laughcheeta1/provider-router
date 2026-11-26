@@ -1,5 +1,6 @@
 /** Versioned, provider-neutral HTTP contracts; no application account is required. */
 import { z } from 'zod';
+import { tokenCountSchema } from './token-count.ts';
 
 export const PROTOCOL_VERSION: 1 = 1;
 export const DEFAULT_PORT: number = 47831;
@@ -29,20 +30,26 @@ export const connectionSchema = z.object({
 export type Connection = z.infer<typeof connectionSchema>;
 /** Local provider availability contains no credential material or inferred model access. */
 export interface DetectedProvider { connection: Connection; status: 'ready' | 'login_required' | 'not_installed'; detail: string }
-export const toolCallSchema = z.object({ id: z.string().min(1), type: z.literal('function'), function: z.object({ name: z.string().min(1), arguments: z.string() }).strict() }).strict();
+const toolInvocationSchema = z.object({ name: z.string(), arguments: z.string() }).strict();
+export const completionToolCallSchema = z.object({ id: z.string(), type: z.literal('function'), function: toolInvocationSchema });
+export const toolCallSchema = completionToolCallSchema.strict().extend({ id: z.string().min(1), function: toolInvocationSchema.extend({ name: z.string().min(1) }) });
 export type ToolCall = z.infer<typeof toolCallSchema>;
 export const filePartSchema = z.object({
   type: z.literal('file'),
   file: z.object({ filename: z.string().min(1).max(255), file_data: z.string().min(1) }).strict(),
 }).strict();
+const jsonSchema: z.ZodJSONSchema = z.json();
+// Validate opaque state without cloning its values and losing their JSON number tokens.
+export const providerStateValueSchema = z.custom<z.infer<typeof jsonSchema>>((value: unknown): boolean => jsonSchema.safeParse(value).success);
+const providerStateObjectSchema = z.custom<Record<string, unknown>>((value: unknown): boolean => value !== null && typeof value === 'object' && !Array.isArray(value));
 /** Provider-owned assistant state scoped to the connection and model that produced it. */
 const continuationSchema = z.object({
   // History validation requires this identity to match the request's UUIDv7 connection.
   connection_id: z.string().uuid(),
   model: z.string(),
   state: z.discriminatedUnion('format', [
-    z.object({ format: z.literal('codex_responses'), items: z.array(z.json()) }).strict(),
-    z.object({ format: z.literal('openrouter_chat'), message: jsonObjectSchema, upstream: z.string(), resolved_model: z.string() }).strict(),
+    z.object({ format: z.literal('codex_responses'), items: z.array(providerStateValueSchema) }).strict(),
+    z.object({ format: z.literal('openrouter_chat'), message: providerStateObjectSchema, upstream: z.string(), resolved_model: z.string() }).strict(),
   ]),
 }).strict();
 export type Continuation = z.infer<typeof continuationSchema>;
@@ -69,10 +76,10 @@ export const inferenceSchema = z.object({
 }).strict();
 export type InferenceRequest = z.infer<typeof inferenceSchema>;
 export const resultSchema = z.object({
-  request_id: uuidSchema, content: z.string(), tool_calls: z.array(toolCallSchema),
+  request_id: uuidSchema, content: z.string(), tool_calls: z.array(completionToolCallSchema),
   usage: z.object({
-    input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
-    cached_input_tokens: z.number().int().nonnegative().optional(), cache_write_tokens: z.number().int().nonnegative().optional(),
+    input_tokens: tokenCountSchema, output_tokens: tokenCountSchema,
+    cached_input_tokens: tokenCountSchema.optional(), cache_write_tokens: tokenCountSchema.optional(),
   }),
   provider: z.enum(['codex', 'openrouter']), method: methodSchema, model: z.string(), reasoning_effort: z.string().optional(),
   continuation: continuationSchema.optional(),

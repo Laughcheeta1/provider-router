@@ -46,7 +46,7 @@ export function validateResult(request: InferenceRequest, result: InferenceResul
   if (request.max_output_tokens && result.usage.output_tokens > request.max_output_tokens) throw new RouterError('OUTPUT_LIMIT', 'The provider exceeded the requested output budget.', 502);
   if (!result.content.trim() && !result.tool_calls.length) throw new RouterError('EMPTY_COMPLETION', 'The provider returned no answer or tool requests.', 502);
   const ids: string[] = result.tool_calls.map((call: ToolCall): string => call.id);
-  if (new Set(ids).size !== ids.length) throw new RouterError('INVALID_TOOL_CALLS', 'The provider returned repeated tool call identifiers.', 502);
+  if (ids.includes('') || new Set(ids).size !== ids.length) throw new RouterError('INVALID_TOOL_CALLS', 'The provider returned repeated or empty tool call identifiers.', 502);
   for (const call of result.tool_calls) {
     const tool: Tool | undefined = request.tools.find((item: Tool): boolean => item.function.name === call.function.name);
     if (!tool) throw new RouterError('INVALID_TOOL_CALLS', 'The provider requested an unavailable tool.', 502);
