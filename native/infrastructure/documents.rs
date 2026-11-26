@@ -166,6 +166,7 @@ pub(super) fn prepare(messages: Vec<Message>, model: &Model) -> Outcome<Vec<Mess
                 tool_call_id: None,
                 tool_calls: None,
                 name: None,
+                continuation: None,
             });
         }
         if !question.is_empty() {
@@ -432,6 +433,7 @@ mod tests {
                 },
             }]),
             name: None,
+            continuation: None,
             tool_call_id: None,
             tool_calls: None,
         };

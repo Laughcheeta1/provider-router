@@ -24,6 +24,8 @@ pub struct Request {
     pub tool_choice: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -45,6 +47,28 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<Continuation>,
+}
+/// Provider-owned assistant state, scoped to the connection and model that produced it.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Continuation {
+    pub connection_id: Uuid,
+    pub model: String,
+    pub state: ContinuationState,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContinuationState {
+    CodexResponses {
+        items: Vec<Value>,
+    },
+    OpenrouterChat {
+        message: Map<String, Value>,
+        upstream: String,
+        resolved_model: String,
+    },
 }
 impl Message {
     pub fn text(role: Role, text: String) -> Self {
@@ -54,6 +78,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            continuation: None,
         }
     }
 }
@@ -144,11 +169,17 @@ pub struct Completion {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<Continuation>,
 }
 #[derive(Deserialize, Serialize)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
 }
 impl Request {
     pub fn validate(&self, model: &Model) -> Outcome<()> {
@@ -157,6 +188,7 @@ impl Request {
             .any(|id| id.get_version_num() != 7)
             || self.model.is_empty()
             || self.messages.is_empty()
+            || self.session_id.is_some_and(|id| id.get_version_num() != 7)
         {
             return Err(Failure::invalid());
         }
@@ -192,6 +224,16 @@ impl Request {
         let mut calls = HashSet::new();
         let mut answered = HashSet::new();
         for message in &self.messages {
+            if let Some(continuation) = &message.continuation
+                && (!matches!(message.role, Role::Assistant)
+                    || continuation.connection_id != self.connection_id
+                    || continuation.model != self.model)
+            {
+                return Err(Failure::bad(
+                    "INVALID_HISTORY",
+                    "Assistant continuation belongs to another connection or model.",
+                ));
+            }
             if let Content::Parts(parts) = &message.content {
                 for part in parts {
                     match part {

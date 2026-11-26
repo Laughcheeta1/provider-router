@@ -71,6 +71,8 @@ struct Responses {
     store: Option<bool>,
     tool_choice: Option<Value>,
     parallel_tool_calls: Option<bool>,
+    provider_router_messages: Option<Vec<Message>>,
+    session_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -192,6 +194,7 @@ pub(super) fn decode(
                     max_output_tokens: input.max_completion_tokens.or(input.max_tokens),
                     tool_choice: input.tool_choice,
                     parallel_tool_calls: input.parallel_tool_calls,
+                    session_id: None,
                 },
                 stream: input.stream,
                 usage: input
@@ -206,7 +209,10 @@ pub(super) fn decode(
                 return Err(Failure::invalid());
             }
             let (connection_id, model) = select(&input.model, connections)?;
-            let mut messages = history(input.input)?;
+            let mut messages = match input.provider_router_messages {
+                Some(messages) => messages,
+                None => history(input.input)?,
+            };
             if let Some(instructions) = input.instructions {
                 messages.insert(0, Message::text(Role::System, instructions));
             }
@@ -243,6 +249,7 @@ pub(super) fn decode(
                     max_output_tokens: input.max_output_tokens,
                     tool_choice,
                     parallel_tool_calls: input.parallel_tool_calls,
+                    session_id: input.session_id,
                 },
                 stream: input.stream,
                 usage: true,
@@ -351,6 +358,7 @@ fn history(input: Input) -> Outcome<Vec<Message>> {
                         name: None,
                         tool_calls: None,
                         tool_call_id: None,
+                        continuation: None,
                     })
                 }
             })
@@ -370,6 +378,19 @@ pub(super) fn response(input: &OpenAi, completion: &Completion) -> Response {
     if let Some(effort) = &completion.reasoning_effort {
         provenance["reasoning_effort"] = json!(effort);
     }
+    if matches!(input.surface, Surface::Responses)
+        && !input.stream
+        && let Some(continuation) = &completion.continuation
+    {
+        provenance["continuation"] = json!(continuation);
+    }
+    let mut cache_usage = serde_json::Map::new();
+    if let Some(tokens) = completion.usage.cached_input_tokens {
+        cache_usage.insert("cached_tokens".into(), json!(tokens));
+    }
+    if let Some(tokens) = completion.usage.cache_write_tokens {
+        cache_usage.insert("cache_write_tokens".into(), json!(tokens));
+    }
     let total = completion
         .usage
         .input_tokens
@@ -377,7 +398,8 @@ pub(super) fn response(input: &OpenAi, completion: &Completion) -> Response {
     match input.surface {
         Surface::Chat => {
             let id = format!("chatcmpl-{}", completion.request_id);
-            let usage = json!({"prompt_tokens":completion.usage.input_tokens, "completion_tokens":completion.usage.output_tokens, "total_tokens":total});
+            let usage = json!({"prompt_tokens":completion.usage.input_tokens, "completion_tokens":completion.usage.output_tokens,
+                "total_tokens":total, "prompt_tokens_details":cache_usage});
             let finish = if completion.tool_calls.is_empty() {
                 "stop"
             } else {
@@ -457,11 +479,13 @@ pub(super) fn response(input: &OpenAi, completion: &Completion) -> Response {
                     value
                 })
                 .collect();
-            let object = json!({"id":format!("resp_{}", completion.request_id), "object":"response","created_at":created,"status":"completed",
+            let mut object = json!({"id":format!("resp_{}", completion.request_id), "object":"response","created_at":created,"status":"completed",
                 "error":null,"incomplete_details":null,"model":input.model,"output":output,"parallel_tool_calls":input.request.parallel_tool_calls.unwrap_or(true),
                 "tool_choice":choice,"tools":tools,"metadata":{},"store":false,"provider_router":provenance,
-                "usage":{"input_tokens":completion.usage.input_tokens,"output_tokens":completion.usage.output_tokens,"total_tokens":total,
-                "input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}});
+                "usage":{"input_tokens":completion.usage.input_tokens,"output_tokens":completion.usage.output_tokens,"total_tokens":total}});
+            if !cache_usage.is_empty() {
+                object["usage"]["input_tokens_details"] = json!(cache_usage);
+            }
             if !input.stream {
                 return Json(object).into_response();
             }
@@ -621,11 +645,14 @@ mod tests {
             usage: Usage {
                 input_tokens: 10,
                 output_tokens: 2,
+                cached_input_tokens: None,
+                cache_write_tokens: None,
             },
             provider: "codex".into(),
             method: "codex_http".into(),
             model: "test-model".into(),
             reasoning_effort: None,
+            continuation: None,
         };
         request.request.evaluate(&completion, &connection).unwrap();
         let response = response(&request, &completion);
@@ -672,11 +699,14 @@ mod tests {
             usage: Usage {
                 input_tokens: 2,
                 output_tokens: 1,
+                cached_input_tokens: None,
+                cache_write_tokens: None,
             },
             provider: "codex".into(),
             method: "codex_http".into(),
             model: "test-model".into(),
             reasoning_effort: None,
+            continuation: None,
         };
         let response = response(&request, &completion);
         let body = to_bytes(response.into_body(), 64_000).await?;

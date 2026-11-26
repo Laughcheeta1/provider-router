@@ -161,11 +161,14 @@ impl<B: InferenceBackend> InferenceService<B> {
                     usage: contracts::Usage {
                         input_tokens: 0,
                         output_tokens: 0,
+                        cached_input_tokens: None,
+                        cache_write_tokens: None,
                     },
                     provider: connection.method.provider().into(),
                     method: method_name(connection),
                     model: request.model,
                     reasoning_effort: None,
+                    continuation: None,
                 });
             }
             let result = self.backend.complete(connection, &request).await?;

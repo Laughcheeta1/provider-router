@@ -10,7 +10,7 @@ pub use discovery::discover;
 use reqwest::{Client, RequestBuilder, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::{fmt, time::Duration};
+use std::{collections::BTreeMap, fmt, time::Duration};
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
 const CODEX_URL: &str = "https://chatgpt.com/backend-api/codex";
 const MAX_PROVIDER_BYTES: usize = 16 * 1024 * 1024;
@@ -83,18 +83,40 @@ pub async fn infer(
 ) -> Result<Value> {
     let output = match connection.method {
         Method::Openrouter => {
+            let key = openrouter_key(key)?;
+            let payload = openrouter_payload(request)?;
             let response = send(
                 client
                     .post(format!("{OPENROUTER_URL}/chat/completions"))
-                    .bearer_auth(openrouter_key(key)?)
-                    .json(&openrouter_payload(request)),
+                    .bearer_auth(key)
+                    .header("X-OpenRouter-Metadata", "enabled")
+                    .json(&payload),
             )
             .await?;
             let completion = bounded_json::<Value>(response).await?;
             if let Some(error) = openrouter_body_error(&completion) {
                 bail!(upstream_body_failure(error));
             }
-            openrouter_output(serde_json::from_value(completion).map_err(|_| invalid_response())?)?
+            let completion: OpenRouterCompletion =
+                serde_json::from_value(completion).map_err(|_| invalid_response())?;
+            let mut output = openrouter_output(&completion)?;
+            if let Some(state) = &mut output.state {
+                let upstream = match payload["provider"]["only"][0].as_str() {
+                    Some(tag) => Some(tag.to_owned()),
+                    None => match (completion.model.as_deref(), completion.selected_provider()) {
+                        (Some(model), Some(provider)) => {
+                            openrouter_endpoint_tag(client, key, model, provider).await
+                        }
+                        _ => None,
+                    },
+                };
+                if let Some(tag) = upstream {
+                    state["upstream"] = json!(tag);
+                } else {
+                    output.state = None;
+                }
+            }
+            output
         }
         Method::Codex => {
             let payload = codex_payload(request)?;
@@ -106,7 +128,8 @@ pub async fn infer(
         "request_id": request["request_id"],
         "content": output.content,
         "tool_calls": output.calls,
-        "usage": {"input_tokens": output.input_tokens, "output_tokens": output.output_tokens},
+        "usage": {"input_tokens": output.input_tokens, "output_tokens": output.output_tokens,
+                  "cached_input_tokens": output.cache_read, "cache_write_tokens": output.cache_write},
         "provider": match connection.method {
             Method::Codex => "codex",
             Method::Openrouter => "openrouter",
@@ -114,6 +137,10 @@ pub async fn infer(
         "method": connection.method,
         "model": request["model"],
     });
+    if let Some(state) = output.state {
+        result["continuation"] =
+            json!({"connection_id": connection.id, "model": request["model"], "state": state});
+    }
     if let Some(effort) = request.get("reasoning_effort") {
         result["reasoning_effort"] = effort.clone();
     }
@@ -128,13 +155,72 @@ fn openrouter_key(key: Option<&str>) -> Result<&str> {
         )
     })
 }
-fn openrouter_payload(request: &Value) -> Value {
+fn openrouter_payload(request: &Value) -> Result<Value> {
+    let mut messages = Vec::new();
+    let mut route: Option<(String, String)> = None;
+    for message in request["messages"].as_array().into_iter().flatten() {
+        let mut message = message.clone();
+        if let Some(continuation) = message
+            .as_object_mut()
+            .and_then(|value| value.remove("continuation"))
+        {
+            let state = &continuation["state"];
+            ensure!(state["format"] == "openrouter_chat", invalid_continuation());
+            let upstream = state["upstream"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(invalid_continuation)?;
+            let resolved_model = state["resolved_model"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(invalid_continuation)?;
+            ensure!(route.as_ref().is_none_or(|(provider, model)| provider == upstream && model == resolved_model), invalid_continuation());
+            route = Some((upstream.to_owned(), resolved_model.to_owned()));
+            let native = &state["message"];
+            let raw_calls = native["tool_calls"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let calls = message["tool_calls"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            ensure!(
+                native["role"] == "assistant"
+                    && text_content(&native["content"]) == text_content(&message["content"])
+                    && raw_calls.len() == calls.len()
+                    && raw_calls.iter().zip(calls).all(|(raw, call)| same_call(
+                        call,
+                        &raw["id"],
+                        &raw["function"]["name"],
+                        &raw["function"]["arguments"],
+                    )),
+                invalid_continuation()
+            );
+            message = native.clone();
+        }
+        messages.push(message);
+    }
     let mut payload = json!({
         "model": request["model"],
-        "messages": request["messages"],
+        "messages": messages,
         "stream": false,
         "provider": {"require_parameters": true},
     });
+    if let Some((upstream, model)) = route {
+        payload["model"] = json!(model);
+        payload["provider"]["only"] = json!([upstream]);
+        payload["provider"]["allow_fallbacks"] = json!(false);
+    }
+    if let Some(id) = request.get("session_id") {
+        payload["session_id"] = id.clone();
+    }
+    if payload["model"]
+        .as_str()
+        .is_some_and(|model| model.starts_with("anthropic/"))
+    {
+        payload["cache_control"] = json!({"type": "ephemeral"});
+    }
     if request["tools"]
         .as_array()
         .is_some_and(|tools| !tools.is_empty())
@@ -152,18 +238,74 @@ fn openrouter_payload(request: &Value) -> Value {
             payload[key] = value.clone();
         }
     }
-    payload
+    Ok(payload)
+}
+fn invalid_continuation() -> anyhow::Error {
+    failure(
+        400,
+        "INVALID_HISTORY",
+        "The assistant continuation is incompatible with this request.",
+    )
 }
 struct Completion {
     content: String,
     calls: Vec<Value>,
     input_tokens: u64,
     output_tokens: u64,
+    state: Option<Value>,
+    cache_read: Option<u64>,
+    cache_write: Option<u64>,
 }
 #[derive(Deserialize)]
 struct OpenRouterCompletion {
     choices: Vec<OpenRouterChoice>,
     usage: OpenRouterUsage,
+    provider: Option<String>,
+    model: Option<String>,
+    openrouter_metadata: Option<Value>,
+}
+impl OpenRouterCompletion {
+    fn selected_provider(&self) -> Option<&str> {
+        self.provider.as_deref().or_else(|| {
+            self.openrouter_metadata.as_ref()?["endpoints"]["available"]
+                .as_array()?
+                .iter()
+                .find(|endpoint| endpoint["selected"] == true)?["provider"]
+                .as_str()
+        })
+    }
+}
+async fn openrouter_endpoint_tag(
+    client: &Client,
+    key: &str,
+    model: &str,
+    provider: &str,
+) -> Option<String> {
+    // Completion metadata names the provider. The routing allowlist needs its endpoint tag.
+    let (author, name) = model.split_once('/')?;
+    let mut url = reqwest::Url::parse(OPENROUTER_URL).ok()?;
+    url.path_segments_mut()
+        .ok()?
+        .extend(["models", author, name, "endpoints"]);
+    let response = send(
+        client
+            .get(url)
+            .bearer_auth(key)
+            .timeout(Duration::from_secs(3)),
+    )
+    .await
+    .ok()?;
+    let catalog: Value = bounded_json(response).await.ok()?;
+    endpoint_tag(&catalog, provider).map(str::to_owned)
+}
+fn endpoint_tag<'a>(catalog: &'a Value, provider: &str) -> Option<&'a str> {
+    let mut tags = catalog["data"]["endpoints"]
+        .as_array()?
+        .iter()
+        .filter(|entry| entry["provider_name"] == provider || entry["tag"] == provider)
+        .filter_map(|entry| entry["tag"].as_str());
+    let tag = tags.next()?;
+    tags.all(|other| other == tag).then_some(tag)
 }
 #[derive(Deserialize)]
 struct OpenRouterChoice {
@@ -174,33 +316,69 @@ struct OpenRouterChoice {
 struct OpenRouterMessage {
     content: Option<String>,
     tool_calls: Option<Vec<Value>>,
+    reasoning: Option<Value>,
+    reasoning_details: Option<Value>,
 }
 #[derive(Deserialize)]
 struct OpenRouterUsage {
     prompt_tokens: u64,
     completion_tokens: u64,
+    prompt_tokens_details: Option<Value>,
 }
-fn openrouter_output(response: OpenRouterCompletion) -> Result<Completion> {
-    let choice = response
-        .choices
-        .into_iter()
-        .next()
-        .ok_or_else(invalid_response)?;
+fn openrouter_output(response: &OpenRouterCompletion) -> Result<Completion> {
+    let choice = response.choices.first().ok_or_else(invalid_response)?;
     ensure!(
         matches!(choice.finish_reason.as_deref(), Some("stop" | "tool_calls")),
         incomplete()
     );
+    let mut native = json!({"role": "assistant", "content": choice.message.content});
+    if let Some(calls) = &choice.message.tool_calls {
+        native["tool_calls"] = json!(calls);
+    }
+    if let Some(value) = &choice.message.reasoning_details {
+        native["reasoning_details"] = value.clone();
+    } else if let Some(value) = &choice.message.reasoning {
+        native["reasoning"] = value.clone();
+    }
+    let state = response.model.as_ref().filter(|_| {
+        !native["reasoning_details"].is_null() || !native["reasoning"].is_null()
+    }).map(|model| json!({"format": "openrouter_chat", "message": native, "resolved_model": model}));
+    let usage_details = response.usage.prompt_tokens_details.as_ref();
     Ok(Completion {
-        content: choice.message.content.unwrap_or_default(),
-        calls: choice.message.tool_calls.unwrap_or_default(),
+        content: choice.message.content.clone().unwrap_or_default(),
+        calls: choice.message.tool_calls.clone().unwrap_or_default(),
         input_tokens: response.usage.prompt_tokens,
         output_tokens: response.usage.completion_tokens,
+        state,
+        cache_read: usage_details.and_then(|details| details["cached_tokens"].as_u64()),
+        cache_write: usage_details.and_then(|details| details["cache_write_tokens"].as_u64()),
     })
 }
 fn codex_payload(request: &Value) -> Result<Value> {
     let mut input = Vec::new();
     for message in request["messages"].as_array().into_iter().flatten() {
         let role = message["role"].as_str().unwrap_or_default();
+        if let Some(continuation) = message.get("continuation") {
+            let state = &continuation["state"];
+            ensure!(state["format"] == "codex_responses", invalid_continuation());
+            let items = state["items"].as_array().ok_or_else(invalid_continuation)?;
+            let mut calls = message["tool_calls"].as_array().into_iter().flatten();
+            for item in items {
+                match item["type"].as_str() {
+                    Some("reasoning") if item["encrypted_content"].as_str().is_some() => {}
+                    Some("reasoning") => continue,
+                    Some("message") if item["role"] == "assistant" => {}
+                    Some("function_call")
+                        if calls.next().is_some_and(|call| {
+                            same_call(call, &item["call_id"], &item["name"], &item["arguments"])
+                        }) => {}
+                    _ => bail!(invalid_continuation()),
+                }
+                input.push(item.clone());
+            }
+            ensure!(calls.next().is_none(), invalid_continuation());
+            continue;
+        }
         if role == "tool" {
             let call_id = message["tool_call_id"].as_str().ok_or_else(|| {
                 failure(
@@ -262,9 +440,13 @@ fn codex_payload(request: &Value) -> Result<Value> {
     let mut payload = json!({
         "model": request["model"], "instructions": "", "input": input,
         "store": false, "stream": true, "tools": tools,
+        "include": ["reasoning.encrypted_content"],
     });
+    if let Some(id) = request.get("session_id") {
+        payload["prompt_cache_key"] = id.clone();
+    }
     if let Some(effort) = request.get("reasoning_effort") {
-        payload["reasoning"] = json!({"effort": effort});
+        payload["reasoning"] = json!({"effort": effort, "summary": "auto"});
     }
     if let Some(choice) = request.get("tool_choice") {
         payload["tool_choice"] = if choice.is_object() {
@@ -283,6 +465,16 @@ fn codex_payload(request: &Value) -> Result<Value> {
         payload["text"] = json!({"format": format});
     }
     Ok(payload)
+}
+fn same_call(call: &Value, id: &Value, name: &Value, arguments: &Value) -> bool {
+    let decode = |value: &Value| {
+        value
+            .as_str()
+            .and_then(|args| serde_json::from_str::<Value>(args).ok())
+    };
+    call["id"] == *id
+        && call["function"]["name"] == *name
+        && decode(arguments).is_some_and(|raw| decode(&call["function"]["arguments"]) == Some(raw))
 }
 fn text_content(value: &Value) -> String {
     match value {
@@ -321,6 +513,10 @@ async fn codex_request(
             );
         if let Some(account) = credentials.account_id {
             request = request.header("ChatGPT-Account-ID", account);
+        }
+        // Codex subscription cache affinity uses the Responses session header.
+        if let Some(session_id) = payload.and_then(|body| body["prompt_cache_key"].as_str()) {
+            request = request.header("session-id", session_id);
         }
         let response = request.send().await.map_err(|_| unavailable())?;
         if response.status().as_u16() == 401 && !retry {
@@ -435,6 +631,7 @@ struct CodexSse {
     line: Vec<u8>,
     data: Vec<u8>,
     received: usize,
+    completed_items: BTreeMap<u64, Value>,
 }
 impl CodexSse {
     fn feed(&mut self, chunk: &[u8]) -> Result<Option<Value>> {
@@ -453,7 +650,43 @@ impl CodexSse {
                         serde_json::from_slice(&self.data).map_err(|_| invalid_response())?;
                     match event["type"].as_str() {
                         Some("response.completed") if event["response"].is_object() => {
-                            return Ok(Some(event["response"].clone()));
+                            let mut response = event["response"].clone();
+                            let terminal_count = response["output"].as_array().map_or(0, Vec::len);
+                            if !self.completed_items.is_empty()
+                                && self.completed_items.len() >= terminal_count
+                                && self
+                                    .completed_items
+                                    .keys()
+                                    .copied()
+                                    .eq(0..self.completed_items.len() as u64)
+                            {
+                                let mut items = std::mem::take(&mut self.completed_items);
+                                if let Some(terminal_items) = response["output"].as_array() {
+                                    for terminal_item in terminal_items {
+                                        if let Some(id) = terminal_item["id"].as_str()
+                                            && let Some(item) =
+                                                items.values_mut().find(|item| item["id"] == id)
+                                        {
+                                            item.as_object_mut()
+                                                .expect("SSE output items are objects")
+                                                .extend(
+                                                    terminal_item
+                                                        .as_object()
+                                                        .expect("an item with an ID is an object")
+                                                        .clone(),
+                                                );
+                                        }
+                                    }
+                                }
+                                response["output"] = Value::Array(items.into_values().collect());
+                            }
+                            return Ok(Some(response));
+                        }
+                        Some("response.output_item.done") if event["item"].is_object() => {
+                            let index = event["output_index"]
+                                .as_u64()
+                                .unwrap_or(self.completed_items.len() as u64);
+                            self.completed_items.insert(index, event["item"].clone());
                         }
                         Some("response.failed") => {
                             bail!(stream_failure(&event["response"]["error"]))
@@ -522,6 +755,9 @@ fn codex_output(response: Value) -> Result<Completion> {
         output_tokens: response["usage"]["output_tokens"]
             .as_u64()
             .ok_or_else(invalid_response)?,
+        state: Some(json!({"format": "codex_responses", "items": response["output"]})),
+        cache_read: response["usage"]["input_tokens_details"]["cached_tokens"].as_u64(),
+        cache_write: response["usage"]["input_tokens_details"]["cache_write_tokens"].as_u64(),
     })
 }
 #[derive(Deserialize)]
@@ -706,6 +942,29 @@ mod tests {
         );
     }
     #[test]
+    fn codex_stream_retains_reasoning_in_completed_output_item_events() {
+        let reasoning = json!({"type":"reasoning","id":"rs_test","encrypted_content":"opaque"});
+        let terminal_reasoning = json!({"type":"reasoning","id":"rs_test","summary":[]});
+        let call = json!({"type":"function_call","id":"fc_test","call_id":"call_test","name":"lookup","arguments":"{}"});
+        let events = [
+            json!({"type":"response.output_item.done", "item":reasoning}),
+            json!({"type":"response.output_item.done", "item":call}),
+            json!({"type":"response.completed", "response":{"status":"completed", "output":[terminal_reasoning,call]}}),
+        ];
+        let mut decoder = CodexSse::default();
+        let outcome = events
+            .iter()
+            .find_map(|event| {
+                decoder
+                    .feed(format!("data: {event}\n\n").as_bytes())
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(outcome["output"][0]["encrypted_content"], "opaque");
+        assert_eq!(outcome["output"][0]["summary"], json!([]));
+        assert_eq!(outcome["output"][1], call);
+    }
+    #[test]
     fn openrouter_body_errors_keep_upstream_status_meaning() {
         let cases = [
             (
@@ -794,6 +1053,27 @@ mod tests {
         assert_eq!(payload["store"], false);
     }
     #[test]
+    fn codex_replays_the_original_ordered_output_before_tool_results() {
+        let reasoning =
+            json!({"type":"reasoning", "id":"rs_test", "encrypted_content":"opaque", "summary":[]});
+        let call = json!({"type":"function_call", "id":"fc_test", "call_id":"call_test", "name":"lookup", "arguments":"{ }"});
+        let completion = codex_output(json!({
+            "status":"completed", "output":[reasoning, call],
+            "usage":{"input_tokens":1200,"output_tokens":20,"input_tokens_details":{"cached_tokens":1024}},
+        })).unwrap();
+        let payload = codex_payload(&json!({"model":"test", "messages":[
+            {"role":"user","content":"Find the value"},
+            {"role":"assistant","content":"","tool_calls":[{"type":"function","id":"call_test",
+                "function":{"name":"lookup","arguments":"{}"}}],"continuation":{"state":completion.state}},
+            {"role":"tool","tool_call_id":"call_test","content":"value"},
+        ]})).unwrap();
+        assert_eq!(payload["input"][1], reasoning);
+        assert_eq!(payload["input"][2], call);
+        assert_eq!(payload["input"][3]["call_id"], "call_test");
+        assert_eq!(payload["include"], json!(["reasoning.encrypted_content"]));
+        assert_eq!(completion.cache_read, Some(1024));
+    }
+    #[test]
     fn openrouter_preserves_tools_reasoning_and_usage() {
         let tool =
             json!({"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}});
@@ -805,22 +1085,40 @@ mod tests {
             "reasoning_effort":"low",
             "max_output_tokens":120,
         });
-        let payload = openrouter_payload(&request);
+        let payload = openrouter_payload(&request).unwrap();
         assert_eq!(payload["tools"][0], tool);
         assert_eq!(payload["tool_choice"], "required");
         assert_eq!(payload["reasoning"]["effort"], "low");
         assert_eq!(payload["max_tokens"], 120);
         let tool_call = json!({"type":"function","id":"call_test","function":{"name":"lookup","arguments":"{}"}});
+        let reasoning = json!([{"type":"reasoning.encrypted", "id":"rs_test", "data":"opaque"}]);
         let mut completion = json!({
-            "choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[tool_call]}}],
-            "usage":{"prompt_tokens":14,"completion_tokens":3},
+            "model":"test/resolved",
+            "openrouter_metadata":{"endpoints":{"available":[{"selected":true,"provider":"OpenAI"}]}},
+            "choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[tool_call],"reasoning_details":reasoning}}],
+            "usage":{"prompt_tokens":14,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":7,"cache_write_tokens":4}},
         });
-        let accepted =
-            openrouter_output(serde_json::from_value(completion.clone()).unwrap()).unwrap();
-        assert_eq!(accepted.calls, [tool_call]);
+        let upstream: OpenRouterCompletion = serde_json::from_value(completion.clone()).unwrap();
+        let endpoints = json!({"data":{"endpoints":[{"provider_name":"OpenAI","tag":"openai"}]}});
+        let tag = endpoint_tag(&endpoints, upstream.selected_provider().unwrap()).unwrap();
+        let mut accepted = openrouter_output(&upstream).unwrap();
+        accepted.state.as_mut().unwrap()["upstream"] = json!(tag);
+        assert_eq!(accepted.calls, [tool_call.clone()]);
         assert_eq!((accepted.input_tokens, accepted.output_tokens), (14, 3));
+        assert_eq!(
+            (accepted.cache_read, accepted.cache_write),
+            (Some(7), Some(4))
+        );
+        let continuation = openrouter_payload(&json!({"model":"test/model", "session_id":"test-session", "messages":[
+            {"role":"assistant","content":"","tool_calls":[tool_call],"continuation":{"state":accepted.state}},
+            {"role":"tool","tool_call_id":"call_test","content":"result"},
+        ]})).unwrap();
+        assert_eq!(continuation["messages"][0]["reasoning_details"], reasoning);
+        assert_eq!(continuation["provider"]["only"], json!(["openai"]));
+        assert_eq!(continuation["model"], "test/resolved");
+        assert_eq!(continuation["session_id"], "test-session");
         completion["choices"][0]["finish_reason"] = "length".into();
-        assert!(openrouter_output(serde_json::from_value(completion).unwrap()).is_err());
+        assert!(openrouter_output(&serde_json::from_value(completion).unwrap()).is_err());
     }
     #[test]
     fn upstream_statuses_distinguish_request_rejections_from_provider_failures() {

@@ -144,3 +144,7 @@ For example, if the provider rejects the requested output schema, the Router ret
 The Router's inference deadline returns HTTP 504 with `error.code` set to `ROUTER_TIMEOUT`. Explicit client cancellation returns HTTP 499 with `error.code` set to `CANCELLED` on the in-flight inference request.
 
 The versioned extension `POST /v1/inference` accepts an explicit UUIDv7 request and connection ID and returns the normalized completion contract. The standard OpenAI endpoints above work with ordinary SDK clients.
+
+The native response can include `continuation` with its `connection_id`, selected `model` and provider-owned `state`. Add that complete object to the corresponding assistant message on the next request, followed by any matching tool results. Codex state contains the ordered Responses items. OpenRouter state contains its assistant message and resolved upstream route. An optional UUIDv7 `session_id` groups related requests for the provider's cache routing. Usage includes `cached_input_tokens` and `cache_write_tokens` when reported upstream.
+
+Non-streaming `POST /v1/responses` also returns the continuation under `provider_router.continuation`. An application using this extension can send the complete normalized history as `provider_router_messages` alongside its stateless Responses input.
