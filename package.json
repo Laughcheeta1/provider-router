@@ -20,6 +20,7 @@
     "@napi-rs/canvas": "1.1.1",
     "@napi-rs/keyring": "2.1.2",
     "ajv": "8.17.1",
+    "ajv-draft-04": "1.0.0",
     "csv-parse": "7.0.3",
     "electron-updater": "^6.8.9",
     "fs-native-extensions": "1.5.3",

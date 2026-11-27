@@ -1,22 +1,7 @@
 /** Validate provider answers and tools at the boundary, before returning them to any client. */
-import { Ajv, type Options } from 'ajv';
-import { Ajv2019 } from 'ajv/dist/2019.js';
-import { Ajv2020 } from 'ajv/dist/2020.js';
-import draft6 from 'ajv/dist/refs/json-schema-draft-06.json' with { type: 'json' };
 import { RouterError, toolChoiceSchema, type InferenceBody, type Continuation, type InferenceRequest, type InferenceResult, type Model, type Tool, type ToolCall } from '../../../../common/schemas/contracts.ts';
-import { parseNativeJson } from '../../../../common/schemas/native-json.ts';
+import { compileJsonSchema, matchesJsonSchema } from './json-schema.ts';
 
-const options: Options = { strict: false, validateFormats: false, addUsedSchema: false, ownProperties: true };
-const draft2020: Ajv2020 = new Ajv2020(options);
-const draft2019: Ajv2019 = new Ajv2019(options);
-const draft7: Ajv = new Ajv(options).addMetaSchema(draft6);
-
-function validator(schema: Record<string, unknown>): Ajv {
-  const dialect: string = typeof schema.$schema === 'string' ? schema.$schema.replace(/#$/, '') : '';
-  if (dialect === 'https://json-schema.org/draft/2019-09/schema') return draft2019;
-  if (dialect === 'http://json-schema.org/draft-06/schema' || dialect === 'http://json-schema.org/draft-07/schema') return draft7;
-  return draft2020;
-}
 /** Enforce advertised model choices, output limits and represented input modalities. */
 export function validateRequest(request: InferenceBody, models: Model[]): InferenceRequest {
   const model: Model | undefined = models.find((item: Model): boolean => item.id === request.model);
@@ -79,21 +64,15 @@ export function validateResult(request: InferenceRequest, result: InferenceResul
   for (const call of result.tool_calls) {
     const tool: Tool | undefined = request.tools.find((item: Tool): boolean => item.function.name === call.function.name);
     if (!tool) throw new RouterError('INVALID_TOOL_CALLS', 'The provider requested an unavailable tool.', 502);
-    let args: unknown;
-    try { args = parseNativeJson(call.function.arguments); }
-    catch { throw new RouterError('INVALID_TOOL_ARGUMENTS', 'The provider returned arguments outside the tool contract.', 502); }
-    if (!validator(tool.function.parameters).validate(tool.function.parameters, args)) throw new RouterError('INVALID_TOOL_ARGUMENTS', 'The provider returned arguments outside the tool contract.', 502);
+    if (!matchesJsonSchema(tool.function.parameters, call.function.arguments)) throw new RouterError('INVALID_TOOL_ARGUMENTS', 'The provider returned arguments outside the tool contract.', 502);
   }
   if (!result.tool_calls.length && request.response_format) {
-    let answer: unknown;
-    try { answer = parseNativeJson(result.content); }
-    catch { throw new RouterError('INVALID_COMPLETION', 'The provider answer does not match the requested schema.', 502); }
-    if (!validator(request.response_format.json_schema.schema).validate(request.response_format.json_schema.schema, answer)) throw new RouterError('INVALID_COMPLETION', 'The provider answer does not match the requested schema.', 502);
+    if (!matchesJsonSchema(request.response_format.json_schema.schema, result.content)) throw new RouterError('INVALID_COMPLETION', 'The provider answer does not match the requested schema.', 502);
   }
   return result;
 }
 
 function validateSchema(schema: Record<string, unknown>): void {
-  try { validator(schema).compile(schema); }
+  try { compileJsonSchema(schema); }
   catch { throw new RouterError('INVALID_SCHEMA', 'Tool and response schemas must be valid local JSON schemas.'); }
 }

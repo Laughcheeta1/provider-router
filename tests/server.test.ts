@@ -13,6 +13,7 @@ import { CodexAuth, type CodexCredentials } from '../src/app/services/provider-s
 import { CodexHttpAdapter, OpenRouterAdapter } from '../src/app/services/provider-service/providers/http-providers.ts';
 const parity: {
   toolArguments: { label: string; source: string; accepted: boolean }[];
+  jsonSchemas: { label: string; schema: string; source: string; code: 'INVALID_SCHEMA' | 'INVALID_COMPLETION' | null }[];
   requests: { label: string; surface: string; source: string; code: string | null; contentType?: string; tools?: unknown[] }[];
   responsesHistory: unknown[];
 } = JSON.parse(
@@ -70,6 +71,40 @@ describe('Provider Router API', (): void => {
     });
     expect(response.status).toBe(accepted ? 200 : 502);
     expect(await response.json()).toMatchObject(accepted ? { content: source } : { error: { code: 'INVALID_COMPLETION' } });
+  });
+
+  it('matches native JSON Schema outcomes for structured answers and tools', async (): Promise<void> => {
+    let answer: string = '';
+    let providerCalls: number = 0;
+    const { listener, token } = await fixture(async (input: InferenceRequest): Promise<InferenceResult> => {
+      providerCalls++;
+      const toolCalls: InferenceResult['tool_calls'] = input.tools.length ? [
+        { id: 'call-1', type: 'function', function: { name: 'lookup', arguments: answer } },
+      ] : [];
+      return {
+        request_id: input.request_id, model: input.model, content: toolCalls.length ? '' : answer, tool_calls: toolCalls,
+        usage: { input_tokens: 2, output_tokens: 1 }, provider: 'codex', method: 'codex_http',
+      };
+    });
+    for (const { label, schema, source, code } of parity.jsonSchemas) {
+      answer = source;
+      for (const tool of [false, true]) {
+        const expected: string | null = tool && code === 'INVALID_COMPLETION' ? 'INVALID_TOOL_ARGUMENTS' : code;
+        const fields: string = tool
+          ? `"tools":[{"type":"function","name":"lookup","parameters":${schema}}]`
+          : `"text":{"format":{"type":"json_schema","name":"answer","schema":${schema}}}`;
+        const previousCalls: number = providerCalls;
+        const response: Response = await fetch(`${listener.endpoint}/v1/responses`, {
+          method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: `{"model":"test-model","input":"Question",${fields}}`,
+        });
+        const output: { error?: { code: string } } = await response.json();
+        const context: string = `${label} (${tool ? 'tool' : 'structured output'})`;
+        expect.soft(output.error?.code ?? null, context).toBe(expected);
+        expect.soft(response.status, context).toBe(code === 'INVALID_SCHEMA' ? 400 : expected ? 502 : 200);
+        expect.soft(providerCalls - previousCalls, context).toBe(code === 'INVALID_SCHEMA' ? 0 : 1);
+      }
+    }
   });
 
   it.each(parity.toolArguments)('validates $label before publishing tool calls for continuation', async ({ source, accepted }): Promise<void> => {

@@ -707,6 +707,83 @@ mod tests {
     }
 
     #[test]
+    fn structured_answers_and_tools_share_json_schema_outcomes() {
+        let connection = connection();
+        let model = &connection.models[0];
+        let mut mismatches = Vec::new();
+        for fixture in wire_parity_fixtures()["jsonSchemas"].as_array().unwrap() {
+            let schema: Value = serde_json::from_str(fixture["schema"].as_str().unwrap()).unwrap();
+            let source = fixture["source"].as_str().unwrap();
+            for tool in [false, true] {
+                let request_id = Uuid::now_v7();
+                let payload = if tool {
+                    json!({
+                        "model": model.id, "input": "Question",
+                        "tools": [{"type": "function", "name": "lookup", "parameters": schema}],
+                    })
+                } else {
+                    json!({
+                        "model": model.id, "input": "Question",
+                        "text": {"format": {"type": "json_schema", "name": "answer", "schema": schema}},
+                    })
+                };
+                let request = decode(
+                    Surface::Responses,
+                    payload,
+                    std::slice::from_ref(&connection),
+                    request_id,
+                )
+                .unwrap();
+                let expected = match fixture["code"].as_str() {
+                    Some("INVALID_SCHEMA") => Some((400, "INVALID_SCHEMA")),
+                    Some("INVALID_COMPLETION") if tool => Some((502, "INVALID_TOOL_ARGUMENTS")),
+                    Some("INVALID_COMPLETION") => Some((502, "INVALID_COMPLETION")),
+                    None => None,
+                    code => panic!("Unexpected fixture code {code:?}"),
+                };
+                let completion = Completion {
+                    request_id,
+                    content: if tool { String::new() } else { source.into() },
+                    tool_calls: if tool {
+                        vec![ToolCall::Function {
+                            id: "call-1".into(),
+                            function: Invocation {
+                                name: "lookup".into(),
+                                arguments: source.into(),
+                            },
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    usage: Usage {
+                        input_tokens: 2,
+                        output_tokens: 1,
+                        cached_input_tokens: None,
+                        cache_write_tokens: None,
+                    },
+                    provider: "codex".into(),
+                    method: "codex_http".into(),
+                    model: model.id.clone(),
+                    reasoning_effort: None,
+                    continuation: None,
+                };
+                let outcome = request
+                    .request
+                    .validate(model)
+                    .and_then(|()| request.request.evaluate(&completion, &connection));
+                let actual = outcome.err().map(|err| (err.status, err.code));
+                if actual != expected {
+                    mismatches.push(format!(
+                        "{} (tool: {tool}): expected {expected:?}, got {actual:?}",
+                        fixture["label"],
+                    ));
+                }
+            }
+        }
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    }
+
+    #[test]
     fn responses_keeps_each_text_part_in_history() {
         let fixtures = wire_parity_fixtures();
         let request = decode(

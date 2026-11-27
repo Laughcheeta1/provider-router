@@ -44,6 +44,15 @@ export function nativeUnsignedField(value: unknown, key: string): bigint | undef
   return integer <= MAX_U64 ? integer : undefined;
 }
 
+/** Recover the serde_json number representation for a decoded schema or instance field. */
+export function nativeSchemaNumber(value: number, parent?: object, key?: string | number): bigint | number {
+  const source: string = parent && key !== undefined ? numberSource(parent, String(key), value) : String(value);
+  if (value === 0 && source.startsWith('-')) return -0;
+  if (!/^(?:0|-?[1-9][0-9]{0,19})$/.test(source)) return value;
+  const integer: bigint = BigInt(source);
+  return integer >= MIN_I64 && integer <= MAX_U64 ? integer : value;
+}
+
 function readNativeJson(source: string, retainNumberTokens: boolean, shape?: NativeJsonShape, byteStrings?: TextDecoder): NativeValue {
   // Parse every token, including values overwritten by duplicate keys, before comparing objects.
   const tokens: RegExp = /[ \t\r\n]*(?:-?(0|[1-9]\d*)(?:\.(\d+))?(?:[eE]([+-]?\d+))?|true|false|null|["{}\[\],:])/y;
