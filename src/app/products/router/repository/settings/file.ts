@@ -1,4 +1,6 @@
 /** Private local configuration and encrypted upstream credentials. */
+import { parseNativeJson } from '../../../../common/schemas/native-json.ts';
+import { stringifyWireJson } from '../../../../common/schemas/json-wire.ts';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -22,7 +24,7 @@ export class RouterStore implements RouterRepository {
     let state: State;
     let migrated: boolean = false;
     try {
-      const stored: unknown = JSON.parse(await readFile(file, 'utf8'));
+      const stored: unknown = parseNativeJson(await readFile(file));
       // Existing installations retain their grants instead of becoming unauthenticated on upgrade.
       if (stored && typeof stored === 'object' && 'network' in stored && stored.network && typeof stored.network === 'object' && !('require_api_key' in stored.network)) Object.assign(stored.network, { require_api_key: true });
       // Retired remote listeners return to loopback while preserving keys, origins and port.
@@ -104,7 +106,7 @@ export class RouterStore implements RouterRepository {
     const write: () => Promise<void> = async (): Promise<void> => {
       const next: State = structuredClone(this.state);
       change(next);
-      const content: string = JSON.stringify(next);
+      const content: string = stringifyWireJson(next);
       await mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
       const temporary: string = `${this.file}.${uuid7()}.tmp`;
       await writeFile(temporary, content, { mode: 0o600 });

@@ -3,13 +3,6 @@ interface NumberToken { source: string; value: number }
 const numberSources: WeakMap<object, Map<string, NumberToken>> = new WeakMap();
 const json: JSON & { rawJSON(text: string): object } = JSON as JSON & { rawJSON(text: string): object };
 
-export function parseWireJson(text: string): unknown {
-  return json.parse(text, function (this: object, key: string, value: unknown, context?: { source: string }): unknown {
-    if (typeof value === 'number' && context) rememberNumberSource(this, key, value, context.source);
-    return value;
-  });
-}
-
 export function rememberNumberSource(parent: object, key: string, value: number, source: string): void {
   const fields: Map<string, NumberToken> | undefined = numberSources.get(parent);
   if (source === String(value)) fields?.delete(key);
@@ -34,10 +27,10 @@ export function copyNumberSources(target: object, source: object): void {
 }
 
 /** Node 24 emits wide counters and opaque numeric values without narrowing their JSON tokens. */
-export function stringifyWireJson(value: unknown): string {
+export function stringifyWireJson(value: unknown, space?: number): string {
   return json.stringify(value, function (this: object, key: string, entry: unknown): unknown {
     if (typeof entry === 'bigint') return json.rawJSON(entry.toString());
     const token: NumberToken | undefined = typeof entry === 'number' ? numberSources.get(this)?.get(key) : undefined;
     return token && Object.is(token.value, entry) ? json.rawJSON(token.source) : entry;
-  });
+  }, space);
 }

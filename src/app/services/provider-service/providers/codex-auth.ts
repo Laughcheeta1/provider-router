@@ -9,6 +9,10 @@ import { Entry } from '@napi-rs/keyring';
 import { tryLock, unlock } from 'fs-native-extensions';
 import { z } from 'zod';
 import { parse as parseToml } from 'smol-toml';
+import { numberSource } from '../../../common/schemas/json-wire.ts';
+import { parseNativeJson, type NativeJsonShape } from '../../../common/schemas/native-json.ts';
+import { nativeOption, nativeStruct } from '../../../common/schemas/native-struct.ts';
+import { readProviderBody } from './provider-body.ts';
 import { RouterError } from '../../../common/schemas/contracts.ts';
 import { uuid7 } from '../../../common/identity/identity.ts';
 
@@ -22,6 +26,13 @@ export interface CredentialStore { load(): Promise<CodexCredentials>; save(expec
 const grants: Map<string, Promise<void>> = new Map();
 const CLIENT_ID: string = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const TOKEN_URL: string = 'https://auth.openai.com/oauth/token';
+const grantFields = { access_token: true, refresh_token: true, id_token: true } satisfies NativeJsonShape;
+const grantSchema = nativeStruct(z.object({
+  access_token: z.string().min(1),
+  refresh_token: nativeOption(z.string().min(1)),
+  id_token: nativeOption(z.string()),
+}));
+
 
 /** Effective CODEX_HOME can be selected per connection; the process default is preserved. */
 export function codexHome(override?: string): string { return override || process.env.CODEX_HOME || path.join(os.homedir(), '.codex'); }
@@ -39,8 +50,23 @@ export async function codexAuthSettings(home: string): Promise<CodexAuthSettings
 
 /** JWT payload metadata is untrusted; only upstream verifies the bearer credential. */
 export function tokenClaims(token: string): Record<string, unknown> {
-  try { const value: unknown = JSON.parse(Buffer.from(token.split('.')[1] || '', 'base64url').toString()); return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
-  catch { return {}; }
+  const payload: string | undefined = token.split('.')[1];
+  if (!payload || !/^[A-Za-z0-9_-]+$/.test(payload)) return {};
+  const bytes: Buffer = Buffer.from(payload, 'base64url');
+  if (bytes.toString('base64url') !== payload) return {};
+  try {
+    const value: unknown = parseNativeJson(bytes);
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  } catch { return {}; }
+}
+
+function tokenExpiration(token: string): bigint | undefined {
+  const claims: Record<string, unknown> = tokenClaims(token);
+  if (typeof claims.exp !== 'number') return undefined;
+  const raw: string = numberSource(claims, 'exp', claims.exp);
+  if (!/^(?:0|-?[1-9][0-9]{0,18})$/.test(raw)) return undefined;
+  const expiration: bigint = BigInt(raw);
+  return BigInt.asIntN(64, expiration) === expiration ? expiration : undefined;
 }
 
 /** Access is refreshed once after a guarded reload; rotating grants are never retried blindly. */
@@ -57,8 +83,12 @@ export class CodexAuth {
     try {
       let credentials: CodexCredentials = await this.storage.load();
       const access: string = credentials.tokens.access_token;
-      const expiration: unknown = tokenClaims(access).exp;
-      const expired: boolean = typeof expiration === 'number' ? expiration <= Date.now() / 1000 + 60 : !credentials.last_refresh || Date.now() - Date.parse(credentials.last_refresh) > 7 * 86400_000;
+      const expiration: bigint | undefined = tokenExpiration(access);
+      const now: number = Date.now();
+      const refreshed: number = Date.parse(credentials.last_refresh ?? '');
+      const expired: boolean = expiration === undefined
+        ? !Number.isFinite(refreshed) || now - refreshed >= 7 * 86400_000
+        : expiration <= BigInt(Math.floor(now / 1000) + 60);
       const changed: boolean = this.lastAccess !== undefined && this.lastAccess !== access;
       if (expired || (forceRefresh && !changed)) credentials = await this.refresh(credentials);
       this.lastAccess = credentials.tokens.access_token;
@@ -97,9 +127,19 @@ export class CodexAuth {
       if (sameIdentity(expected, reloaded) && reloaded.tokens.access_token !== expected.tokens.access_token) return reloaded;
       throw new RouterError('CODEX_AUTH_EXPIRED', 'The existing Codex login could not be refreshed. Reauthenticate with Codex and try again.', 401);
     }
-    const parsed: unknown = await response.json();
-    const tokens = z.object({ access_token: z.string().min(1), refresh_token: z.string().optional(), id_token: z.string().optional() }).parse(parsed);
-    const updated: CodexCredentials = { ...expected, tokens: { ...expected.tokens, ...tokens }, last_refresh: new Date().toISOString() };
+    let grant: z.infer<typeof grantSchema>;
+    try { grant = grantSchema.parse(parseNativeJson(await readProviderBody(response), grantFields)); }
+    catch { throw new RouterError('CODEX_AUTH_EXPIRED', 'The existing Codex login could not be refreshed. Sign in with Codex and try again.', 401); }
+    const updated: CodexCredentials = {
+      ...expected,
+      tokens: {
+        ...expected.tokens,
+        access_token: grant.access_token,
+        ...(grant.refresh_token !== undefined ? { refresh_token: grant.refresh_token } : {}),
+        ...(grant.id_token !== undefined ? { id_token: grant.id_token } : {}),
+      },
+      last_refresh: new Date().toISOString(),
+    };
     const saved: CodexCredentials = await this.storage.save(expected, updated);
     // Retain the generation marker on any uncertain exchange/commit failure. A
     // subsequent request must not replay a refresh grant that may have rotated.

@@ -1,30 +1,46 @@
 /** OpenAI-compatible Chat Completions and Responses framing over the common provider boundary. */
 import type { ServerResponse } from 'node:http';
 import { z } from 'zod';
-import { inferenceSchema, jsonObjectSchema, messageSchema, RouterError, toolSchema, uuidSchema, type Connection, type InferenceRequest, type InferenceResult, type Message, type Tool } from '../../../common/schemas/contracts.ts';
+import { formatSchema, functionSchema, inferenceIdSchema, nativeUuidSchema, messageSchema, roleSchema, RouterError, structuredSchema, toolChoiceSchema, toolSchema, type Connection, type InferenceRequest, type InferenceResult, type Message, type Tool } from '../../../common/schemas/contracts.ts';
 import { stringifyWireJson } from '../../../common/schemas/json-wire.ts';
-import { totalTokenCount, type TokenCount } from '../../../common/schemas/token-count.ts';
+import { nativeOption, nativeStruct } from '../../../common/schemas/native-struct.ts';
+import { tokenCountSchema, totalTokenCount, type TokenCount } from '../../../common/schemas/token-count.ts';
 import { uuid7 } from '../../../common/identity/identity.ts';
-const formatSchema = z.object({ type: z.literal('json_schema'), json_schema: z.object({ name: z.string(), schema: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).strict();
-const toolChoiceSchema = z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), function: z.object({ name: z.string() }) })]);
-const chatSchema = z.object({ model: z.string().min(1), messages: z.array(messageSchema).min(1), tools: z.array(toolSchema).optional(), response_format: formatSchema.optional(), reasoning_effort: z.string().optional(), max_tokens: z.number().int().positive().optional(), max_completion_tokens: z.number().int().positive().optional(), stream: z.boolean().default(false), stream_options: z.object({ include_usage: z.boolean().optional() }).optional(), tool_choice: toolChoiceSchema.optional(), parallel_tool_calls: z.boolean().optional() }).strict();
-const responseTextPartSchema = z.object({ type: z.enum(['input_text', 'output_text']), text: z.string(), annotations: z.array(z.unknown()).optional(), logprobs: z.array(z.unknown()).optional() });
-const responseFilePartSchema = z.object({ type: z.literal('input_file'), filename: z.string(), file_data: z.string() }).strict();
+const chatSchema = nativeStruct(z.strictObject({
+  model: z.string(),
+  messages: z.array(messageSchema),
+  tools: z.array(toolSchema).default([]),
+  response_format: nativeOption(formatSchema),
+  reasoning_effort: nativeOption(z.string()),
+  max_tokens: nativeOption(tokenCountSchema),
+  max_completion_tokens: nativeOption(tokenCountSchema),
+  stream: z.boolean().default(false),
+  stream_options: nativeOption(nativeStruct(z.strictObject({ include_usage: z.boolean().default(false) }), undefined, 0)),
+  tool_choice: z.unknown().optional(),
+  parallel_tool_calls: nativeOption(z.boolean()),
+}), undefined, undefined, ['max_tokens', 'max_completion_tokens']);
+const responseTextPartSchema = z.object({ type: z.enum(['input_text', 'output_text']), text: z.string() });
+const responseFilePartSchema = z.object({ type: z.literal('input_file'), filename: z.string(), file_data: z.string() });
 const responseInputSchema = z.union([z.string(), z.array(z.union([
   z.object({ type: z.literal('function_call'), call_id: z.string(), name: z.string(), arguments: z.string(), id: z.string().nullish(), status: z.string().nullish() }).strict(),
   z.object({ type: z.literal('function_call_output'), call_id: z.string(), output: z.string(), id: z.string().nullish() }).strict(),
-  z.object({ role: messageSchema.shape.role, type: z.string().nullish(), content: z.union([z.string(), z.array(z.union([responseTextPartSchema, responseFilePartSchema]))]), id: z.string().nullish(), status: z.string().nullish() }).strict(),
+  nativeStruct(z.strictObject({ role: roleSchema, type: z.string().nullish(), content: z.union([z.string(), z.array(z.union([responseTextPartSchema, responseFilePartSchema]))]), id: z.string().nullish(), status: z.string().nullish() })),
 ]))]);
-const responsesSchema = z.object({
-  model: z.string().min(1), input: responseInputSchema, instructions: z.string().nullish(),
-  tools: z.array(z.object({ type: z.literal('function'), name: z.string(), description: z.string().optional(), parameters: jsonObjectSchema, strict: z.boolean().optional() }).strict()).optional(),
-  text: z.object({ format: z.object({ type: z.literal('json_schema'), name: z.string(), schema: jsonObjectSchema, strict: z.boolean().optional() }).strict() }).optional(),
-  reasoning: z.object({ effort: z.string().nullish() }).optional(),
-  max_output_tokens: z.number().int().positive().optional(), stream: z.boolean().default(false), store: z.literal(false).optional(),
-  tool_choice: z.union([z.enum(['auto', 'none', 'required']), z.object({ type: z.literal('function'), name: z.string() })]).optional(),
-  parallel_tool_calls: z.boolean().optional(),
-  provider_router_messages: z.array(messageSchema).nullish(), session_id: inferenceSchema.shape.session_id,
-}).strict();
+const responsesSchema = nativeStruct(z.strictObject({
+  model: z.string(),
+  input: responseInputSchema,
+  instructions: nativeOption(z.string()),
+  tools: z.array(functionSchema.extend({ type: z.literal('function') })).default([]),
+  text: nativeOption(nativeStruct(z.strictObject({ format: structuredSchema.extend({ type: z.literal('json_schema') }) }))),
+  reasoning: nativeOption(nativeStruct(z.strictObject({ effort: nativeOption(z.string()) }))),
+  max_output_tokens: nativeOption(tokenCountSchema),
+  stream: z.boolean().default(false),
+  store: nativeOption(z.boolean()),
+  tool_choice: z.unknown().optional(),
+  parallel_tool_calls: nativeOption(z.boolean()),
+  provider_router_messages: nativeOption(z.array(messageSchema)),
+  session_id: nativeOption(nativeUuidSchema),
+}), undefined, undefined, ['max_output_tokens']);
 export interface OpenAIRequest {
   inference: InferenceRequest;
   tools: Tool[];
@@ -41,45 +57,53 @@ export function modelList(connections: Connection[]): Record<string, unknown> {
 }
 /** Decode supported SDK inputs explicitly; unsupported options fail before spending provider tokens. */
 export function decodeOpenAI(surface: 'chat' | 'responses', value: unknown, connections: Connection[], requestId?: string): OpenAIRequest {
-  const correlation = uuidSchema.safeParse(requestId);
+  const correlation = inferenceIdSchema.safeParse(requestId);
   const id: string = correlation.success ? correlation.data : uuid7();
   if (surface === 'chat') {
     const input = chatSchema.parse(value);
-    if (input.max_tokens && input.max_completion_tokens) throw new RouterError('INVALID_REQUEST', 'Specify only one output token limit.');
-    const selected: { connection: Connection; model: string; qualified: string } = selectModel(input.model, connections);
-    const choice: OpenAIRequest['tool_choice'] = typeof input.tool_choice === 'object' ? { name: input.tool_choice.function.name } : input.tool_choice || 'auto';
-    const inference: InferenceRequest = inferenceSchema.parse({ request_id: id, connection_id: selected.connection.id, model: selected.model, messages: input.messages, tools: choice === 'none' ? [] : input.tools || [], reasoning_effort: input.reasoning_effort, response_format: input.response_format, max_output_tokens: input.max_completion_tokens || input.max_tokens, tool_choice: input.tool_choice, parallel_tool_calls: input.parallel_tool_calls });
-    validateChoice(choice, inference.tools);
-    return { inference, tools: input.tools || [], model: selected.qualified, stream: input.stream, stream_usage: input.stream_options?.include_usage || false, surface, tool_choice: choice, parallel_tool_calls: input.parallel_tool_calls ?? true };
+    if (input.max_tokens !== undefined && input.max_completion_tokens !== undefined) throw new RouterError('INVALID_REQUEST', 'The request does not match the API contract.');
+    const selected: ReturnType<typeof selectModel> = selectModel(input.model, connections);
+    const toolChoice: InferenceRequest['tool_choice'] = toolChoiceSchema.parse(input.tool_choice);
+    const tools: Tool[] = toolChoice === 'none' ? [] : input.tools;
+    const inference: InferenceRequest = {
+      request_id: id, connection_id: selected.connection.id, model: selected.model,
+      messages: input.messages, tools, reasoning_effort: input.reasoning_effort,
+      response_format: input.response_format, max_output_tokens: input.max_completion_tokens ?? input.max_tokens,
+      tool_choice: toolChoice, parallel_tool_calls: input.parallel_tool_calls,
+    };
+    return { inference, tools, model: selected.qualified, stream: input.stream, stream_usage: input.stream_options?.include_usage ?? false, surface, tool_choice: openAIChoice(toolChoice), parallel_tool_calls: input.parallel_tool_calls ?? true };
   }
   const input = responsesSchema.parse(value);
-  const selected: { connection: Connection; model: string; qualified: string } = selectModel(input.model, connections);
+  if (input.store) throw new RouterError('INVALID_REQUEST', 'The request does not match the API contract.');
+  const selected: ReturnType<typeof selectModel> = selectModel(input.model, connections);
   const messages: Message[] = input.provider_router_messages ?? responseMessages(input.input);
-  if (input.instructions != null) messages.unshift({ role: 'system', content: input.instructions });
-  const choice: OpenAIRequest['tool_choice'] = typeof input.tool_choice === 'object' ? { name: input.tool_choice.name } : input.tool_choice || 'auto';
-  const tools: Tool[] = (input.tools || []).map((tool): Tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters, strict: tool.strict } }));
-  const inference: InferenceRequest = inferenceSchema.parse({
-    request_id: id, connection_id: selected.connection.id, model: selected.model, messages,
-    tools: choice === 'none' ? [] : tools, reasoning_effort: input.reasoning?.effort || undefined,
-    response_format: input.text?.format ? { type: 'json_schema', json_schema: { name: input.text.format.name, schema: input.text.format.schema, strict: input.text.format.strict } } : undefined,
-    max_output_tokens: input.max_output_tokens,
-    tool_choice: typeof choice === 'object' ? { type: 'function', function: { name: choice.name } } : choice,
+  if (input.instructions !== undefined) messages.unshift({ role: 'system', content: input.instructions });
+  const rawChoice: unknown = input.tool_choice;
+  const toolChoice: InferenceRequest['tool_choice'] = toolChoiceSchema.parse(
+    rawChoice && typeof rawChoice === 'object' && 'type' in rawChoice && rawChoice.type === 'function'
+      ? { type: 'function', function: { name: 'name' in rawChoice ? rawChoice.name : undefined } }
+      : rawChoice,
+  );
+  const tools: Tool[] = toolChoice === 'none' ? [] : input.tools.map(({ type, ...fn }): Tool => ({ type, function: fn }));
+  const format = input.text?.format;
+  const inference: InferenceRequest = {
+    request_id: id, connection_id: selected.connection.id, model: selected.model, messages, tools,
+    reasoning_effort: input.reasoning?.effort,
+    response_format: format && { type: format.type, json_schema: { name: format.name, schema: format.schema, strict: format.strict } },
+    max_output_tokens: input.max_output_tokens, tool_choice: toolChoice,
     parallel_tool_calls: input.parallel_tool_calls, session_id: input.session_id,
-  });
-  validateChoice(choice, inference.tools);
-  return { inference, tools, model: selected.qualified, stream: input.stream, stream_usage: true, surface, tool_choice: choice, parallel_tool_calls: input.parallel_tool_calls ?? true };
+  };
+  return { inference, tools, model: selected.qualified, stream: input.stream, stream_usage: true, surface, tool_choice: openAIChoice(toolChoice), parallel_tool_calls: input.parallel_tool_calls ?? true };
 }
-/** Validate the caller's requested decision shape even for adapters without native choice support. */
-export function validateOpenAIResult(request: OpenAIRequest, result: InferenceResult): void {
-  if (request.tool_choice === 'required' && !result.tool_calls.length) throw new RouterError('TOOL_CHOICE_UNFULFILLED', 'The provider did not return a required tool call.', 502);
-  const choice: OpenAIRequest['tool_choice'] = request.tool_choice;
-  if (typeof choice === 'object' && (!result.tool_calls.length || result.tool_calls.some((call): boolean => call.function.name !== choice.name))) throw new RouterError('TOOL_CHOICE_UNFULFILLED', 'The provider did not return the selected tool call.', 502);
-  if (!request.parallel_tool_calls && result.tool_calls.length > 1) throw new RouterError('PARALLEL_TOOLS_UNSUPPORTED', 'The provider returned more than one tool call.', 502);
+
+function openAIChoice(choice: InferenceRequest['tool_choice']): OpenAIRequest['tool_choice'] {
+  return typeof choice === 'object' ? { name: choice.function.name } : choice ?? 'auto';
 }
+
 /** Emit normal SDK objects or finite SSE streams; version 1 buffers inference until completion. */
 export function writeOpenAI(response: ServerResponse, request: OpenAIRequest, result: InferenceResult): void {
   const created: number = Math.floor(Date.now() / 1000);
-  const provenance: Record<string, unknown> = { provider: result.provider, method: result.method, connection_id: request.inference.connection_id, model: result.model, ...(result.reasoning_effort ? { reasoning_effort: result.reasoning_effort } : {}) };
+  const provenance: Record<string, unknown> = { provider: result.provider, method: result.method, connection_id: request.inference.connection_id, model: result.model, ...(result.reasoning_effort !== undefined ? { reasoning_effort: result.reasoning_effort } : {}) };
   const { input_tokens, output_tokens, cached_input_tokens, cache_write_tokens } = result.usage;
   const total: TokenCount = totalTokenCount(input_tokens, output_tokens);
   const cacheDetails: Record<string, TokenCount> = {};
@@ -150,10 +174,6 @@ function responseMessages(input: z.infer<typeof responseInputSchema>): Message[]
     }
     return { role: 'tool', tool_call_id: item.call_id, content: item.output };
   });
-}
-function validateChoice(choice: OpenAIRequest['tool_choice'], tools: Tool[]): void {
-  if (choice === 'required' && !tools.length) throw new RouterError('INVALID_TOOL_CHOICE', 'Required tool choice needs at least one function.');
-  if (typeof choice === 'object' && !tools.some((tool: Tool): boolean => tool.function.name === choice.name)) throw new RouterError('INVALID_TOOL_CHOICE', 'The selected function is not present in tools.');
 }
 function json(response: ServerResponse, body: unknown): void { response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(stringifyWireJson(body)); }
 function sseHeaders(response: ServerResponse): void { response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); }

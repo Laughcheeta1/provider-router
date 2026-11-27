@@ -1,4 +1,5 @@
 /** Map scriptable commands to the same settings operations used by both interactive apps. */
+import { parseNativeJson } from './common/schemas/native-json.ts';
 import { parseArgs } from 'node:util';
 import { z } from 'zod';
 import { uuid7 } from './common/identity/identity.ts';
@@ -70,7 +71,7 @@ export async function executeCli(client: ControlClient, args: readonly string[])
   }
 
   if (group === 'settings' && action === 'apply' && values.length === 0) {
-    const raw: unknown = JSON.parse(await readStdin());
+    const raw: unknown = parseNativeJson(await readStdin());
     return invoke(commandSchema.parse(raw));
   }
 

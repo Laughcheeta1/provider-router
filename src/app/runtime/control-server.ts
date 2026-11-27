@@ -1,4 +1,6 @@
 /** Manage the local settings control channel and count live desktop/terminal sessions. */
+import { parseNativeJson } from '../common/schemas/native-json.ts';
+import { stringifyWireJson } from '../common/schemas/json-wire.ts';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -116,10 +118,10 @@ async function handleSettings(request: IncomingMessage, response: ServerResponse
       chunks.push(buffer);
     }
 
-    const raw: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const raw: unknown = parseNativeJson(Buffer.concat(chunks));
     const command: SettingsCommand = commandSchema.parse(raw);
     const reply: SettingsReply = await runtime.execute(command);
-    if (!response.destroyed) response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(reply));
+    if (!response.destroyed) response.writeHead(200, { 'Content-Type': 'application/json' }).end(stringifyWireJson(reply));
     if (command.type === 'save_startup' && reply.ok) scheduleIdleStop(250);
   } catch {
     if (!response.destroyed) response.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, error: 'Invalid settings command.' }));

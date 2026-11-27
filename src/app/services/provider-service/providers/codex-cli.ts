@@ -9,22 +9,11 @@ import { codexAuthSettings, codexHome, type CodexAuthSettings } from './codex-au
 import { uuid7 } from '../../../common/identity/identity.ts';
 import { resolveNativeCodex, type NativeCodexCommand } from './native-codex.ts';
 import { prepareWslCodex, resolveWslCodex, type WslCodexContext, type WslCodexLaunch } from './wsl-codex.ts';
+import { decodeCodexCatalog } from './provider-catalog.ts';
 import { cliDecisionSchema, decodeCliDecision, type CliDecision } from './cli-decision.ts';
 
 /** Native goals require persistence; user-input tools require an interactive session. Neither belongs in this stateless model transport. */
 const disabledFeatures: string[] = ['shell_tool', 'unified_exec', 'multi_agent', 'multi_agent_v2', 'apps', 'plugins', 'hooks', 'code_mode_host', 'browser_use', 'browser_use_external', 'in_app_browser', 'computer_use', 'image_generation', 'skill_search', 'skill_mcp_dependency_install', 'view_image', 'sleep_tool', 'tool_suggest', 'goals', 'default_mode_request_user_input'];
-
-/** Read catalog metadata only, excluding model instructions, credentials and local tools. */
-export function codexCatalog(value: unknown): Model[] {
-  const entries = z.object({ models: z.array(z.object({ slug: z.string(), input_modalities: z.array(z.string()).optional(), display_name: z.string().optional(), context_window: z.number().optional(), max_output_tokens: z.number().optional(), supported_reasoning_levels: z.array(z.union([z.string(), z.object({ effort: z.string() })])).optional(), default_reasoning_level: z.string().optional() }).passthrough()) }).parse(value).models;
-  return entries.filter((entry): boolean => entry.slug !== 'gpt-reserve' && typeof entry.context_window === 'number' && entry.context_window > 0).map((entry): Model => ({
-    id: entry.slug, name: entry.display_name || entry.slug,
-    reasoning_efforts: (entry.supported_reasoning_levels || []).map((effort): string => typeof effort === 'string' ? effort : effort.effort),
-    default_reasoning_effort: entry.default_reasoning_level || null,
-    context_window: entry.context_window!, max_output_tokens: entry.max_output_tokens || Math.floor(entry.context_window! / 5),
-    tools: true, structured_output: true, input_modalities: entry.input_modalities?.includes('image') ? ['text', 'image'] : ['text'],
-  }));
-}
 
 /** One invocation asks for one logical decision; Codex can internally retry its own transport. */
 export class CodexCliAdapter implements ProviderAdapter {
@@ -68,7 +57,7 @@ export class CodexCliAdapter implements ProviderAdapter {
   async models(connection: Connection, _signal: AbortSignal): Promise<Model[]> {
     try {
       const wsl: WslCodexContext | null = connection.environment === 'wsl' ? await resolveWslCodex(connection.wsl_distribution!, { executable: connection.executable, codexHome: connection.codex_home }) : null;
-      return codexCatalog(JSON.parse(await readFile(path.join(wsl?.catalogDirectory || codexHome(connection.codex_home), 'models_cache.json'), 'utf8')));
+      return decodeCodexCatalog(await readFile(path.join(wsl?.catalogDirectory || codexHome(connection.codex_home), 'models_cache.json')));
     }
     catch { throw new RouterError('CODEX_CATALOG_UNAVAILABLE', 'Codex model metadata is unavailable. Start your installed Codex once to refresh its model catalog.', 503); }
   }

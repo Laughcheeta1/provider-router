@@ -672,6 +672,66 @@ mod tests {
         };
         (directory, home)
     }
+    fn wire_parity_fixtures() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../tests/fixtures/router-wire-parity.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn codex_grant_fixtures_match_the_native_typed_contract() {
+        // The production Grant is scoped to the refresh function. Use its wire fields here
+        // so the fixture can run without connecting to a real OAuth authority.
+        #[derive(Deserialize)]
+        struct Grant {
+            access_token: String,
+            refresh_token: Option<String>,
+            id_token: Option<String>,
+        }
+        for fixture in wire_parity_fixtures()["grants"].as_array().unwrap() {
+            let source = fixture["source"].as_str().unwrap();
+            let bytes = match source.split_once("$INVALID_UTF8") {
+                Some((before, after)) => [before.as_bytes(), &[0xff], after.as_bytes()].concat(),
+                None => source.as_bytes().to_vec(),
+            };
+            let decoded = serde_json::from_slice::<Grant>(&bytes)
+                .ok()
+                .filter(|grant| {
+                    !grant.access_token.is_empty()
+                        && grant
+                            .refresh_token
+                            .as_deref()
+                            .is_none_or(|token| !token.is_empty())
+                });
+            let tokens = decoded.map(|grant| {
+                json!({
+                    "access_token": grant.access_token,
+                    "refresh_token": grant.refresh_token.as_deref().unwrap_or("synthetic-refresh"),
+                    "id_token": grant.id_token.as_deref().unwrap_or("synthetic-identity"),
+                })
+            });
+            assert_eq!(json!(tokens), fixture["tokens"], "{}", fixture["label"]);
+        }
+    }
+
+    #[test]
+    fn codex_checks_provider_expiration_claims_as_native_signed_integers() {
+        for fixture in wire_parity_fixtures()["claims"].as_array().unwrap() {
+            let mut document = session(0);
+            let claims = URL_SAFE_NO_PAD.encode(fixture["source"].as_str().unwrap());
+            document["tokens"]["access_token"] = json!(format!("opaque.{claims}.example"));
+            document["last_refresh"] = json!(Utc::now().to_rfc3339());
+            let credentials = Credentials::new(document, Backend::File).unwrap();
+            assert_eq!(
+                credentials.expired(),
+                fixture["refresh"],
+                "{}",
+                fixture["label"]
+            );
+        }
+    }
+
     #[tokio::test]
     async fn reads_a_live_credential_without_rewriting_codex_storage() {
         let (_directory, home) = home();

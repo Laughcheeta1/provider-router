@@ -110,9 +110,9 @@ describe('OpenAI SDK compatibility', (): void => {
     for await (const event of stream) { events.push(event.type); if (event.type === 'response.output_text.delta') content += event.delta; if (event.type === 'response.completed') completed = event.response.status === 'completed'; }
     expect(events[0]).toBe('response.created'); expect(events).toContain('response.content_part.done'); expect(content).toBe('{"answer":42}'); expect(completed).toBe(true);
   });
-  it('echoes the configured Responses tools while enforcing tool_choice none', async (): Promise<void> => {
+  it('lists the active Responses tools after applying tool_choice none', async (): Promise<void> => {
     const result = await client.responses.create({ model: selected, input: 'Synthetic question', tool_choice: 'none', tools: [{ type: 'function', name: 'read_balance', parameters: { type: 'object' }, strict: false }] });
-    expect(result.tool_choice).toBe('none'); expect(result.tools).toMatchObject([{ type: 'function', name: 'read_balance' }]); expect(lastRequest?.tools).toEqual([]);
+    expect(result.tool_choice).toBe('none'); expect(result.tools).toEqual([]); expect(lastRequest?.tools).toEqual([]);
   });
   it('rejects ambiguous models and unsupported SDK options with standard errors before inference', async (): Promise<void> => {
     await store.saveConnection({ id: uuid7(), name: 'Another account', method: 'codex_http', exposed: true, models: [model] });

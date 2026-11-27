@@ -667,6 +667,46 @@ mod tests {
     }
 
     #[test]
+    fn structured_answers_share_native_json_acceptance_with_tool_arguments() {
+        let connection = connection();
+        let request_id = Uuid::now_v7();
+        let request = decode(
+            Surface::Responses,
+            json!({
+                "model": "test-model",
+                "input": "Synthetic question",
+                "text": {"format": {"type": "json_schema", "name": "answer", "schema": {"type": "object"}}}
+            }),
+            std::slice::from_ref(&connection),
+            request_id,
+        )
+        .unwrap();
+        for fixture in wire_parity_fixtures()["toolArguments"].as_array().unwrap() {
+            let completion = Completion {
+                request_id,
+                content: fixture["source"].as_str().unwrap().into(),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                    cached_input_tokens: None,
+                    cache_write_tokens: None,
+                },
+                provider: "codex".into(),
+                method: "codex_http".into(),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                continuation: None,
+            };
+            let result = request.request.evaluate(&completion, &connection);
+            assert_eq!(result.is_ok(), fixture["accepted"], "{}", fixture["label"]);
+            if let Err(failure) = result {
+                assert_eq!((failure.status, failure.code), (502, "INVALID_COMPLETION"));
+            }
+        }
+    }
+
+    #[test]
     fn responses_keeps_each_text_part_in_history() {
         let fixtures = wire_parity_fixtures();
         let request = decode(

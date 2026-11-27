@@ -18,7 +18,7 @@ export async function prepareDocuments(messages: Message[], model: Model, signal
   let textBytes: number = 0;
   let imageBytes: number = 0;
   let images: number = 0;
-  const textLimit: number = Math.min(256 * 1024, model.context_window);
+  const textLimit: number = Math.min(256 * 1024, Number(model.context_window));
   const vision: boolean = model.input_modalities.includes('image');
   for (const message of messages) {
     if (!Array.isArray(message.content) || !message.content.some((part): boolean => part.type === 'file')) {

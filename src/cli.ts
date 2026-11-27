@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** Headless and interactive entry point for the same Provider Router configuration. */
+import { stringifyWireJson } from './app/common/schemas/json-wire.ts';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
@@ -60,7 +61,7 @@ async function main(): Promise<void> {
     }
 
     if (args.length) {
-      console.log(JSON.stringify(await executeCli(client, args), null, 2));
+      console.log(stringifyWireJson(await executeCli(client, args), 2));
       return;
     }
 

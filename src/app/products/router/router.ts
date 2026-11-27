@@ -2,15 +2,16 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { ZodError } from 'zod';
-import { inferenceSchema, PROTOCOL_VERSION, RouterError, type Connection, type InferenceRequest, type InferenceResult, type Method, type ProviderAdapter, type ProviderDescriptor } from '../../common/schemas/contracts.ts';
-import { parseWireJson, stringifyWireJson } from '../../common/schemas/json-wire.ts';
+import { inferenceIdSchema, inferenceSchema, PROTOCOL_VERSION, RouterError, type Connection, type InferenceBody, type InferenceResult, type Method, type ProviderAdapter, type ProviderDescriptor } from '../../common/schemas/contracts.ts';
+import { stringifyWireJson } from '../../common/schemas/json-wire.ts';
+import { parseNativeJson } from '../../common/schemas/native-json.ts';
 import type { RouterRepository } from './repository/settings/contract.ts';
 import type { Client, NetworkSettings } from './schemas/state.ts';
 import { buildInferenceUseCase } from './dependencies.ts';
 import { validateNetwork } from './network-policy.ts';
 export { validateNetwork } from './network-policy.ts';
 import type { InferenceUseCase } from './use-cases/inference/use-case.ts';
-import { decodeOpenAI, modelList, validateOpenAIResult, writeOpenAI, type OpenAIRequest } from './presentation/openai-api.ts';
+import { decodeOpenAI, modelList, writeOpenAI, type OpenAIRequest } from './presentation/openai-api.ts';
 export interface ListeningRouter { endpoint: string; close(): Promise<void>; revokeClient(id: string): Promise<void> }
 /** Start one independent service; no client connection owns the service lifecycle. */
 export async function startRouter(store: RouterRepository, adapters: Record<Method, ProviderAdapter>, network: NetworkSettings, version: string): Promise<ListeningRouter> {
@@ -66,17 +67,19 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
       const providers: ProviderDescriptor[] = store.connections().filter((connection: Connection): boolean => connection.exposed).map((connection: Connection): ProviderDescriptor => ({ id: connection.id, name: connection.name, provider: connection.method === 'openrouter_http' ? 'openrouter' : 'codex', method: connection.method, models: connection.models }));
       json(response, 200, { protocol_version: PROTOCOL_VERSION, providers }); return;
     }
-    const cancel: RegExpExecArray | null = /^\/v1\/inference\/([0-9a-f-]+)\/cancel$/.exec(target.pathname);
+    const cancel: RegExpExecArray | null = /^\/v1\/inference\/(.*)\/cancel$/.exec(target.pathname);
     if (cancel && request.method === 'POST') {
-      inference.cancel(client?.id ?? store.publicState().instance_id, cancel[1]!); json(response, 200, { cancelled: true }); return;
+      const id = inferenceIdSchema.safeParse(cancel[1]);
+      if (!id.success) throw new RouterError('REQUEST_NOT_FOUND', 'No active request was found for this client.', 404);
+      inference.cancel(client?.id ?? store.publicState().instance_id, id.data); json(response, 200, { cancelled: true }); return;
     }
     const checkAttachments: boolean = target.pathname === '/v1/attachment-checks';
     if (!['/v1/inference', '/v1/chat/completions', '/v1/responses', '/v1/attachment-checks'].includes(target.pathname) || request.method !== 'POST') throw new RouterError('NOT_FOUND', 'This endpoint is unavailable.', 404);
-    if (!request.headers['content-type']?.startsWith('application/json')) throw new RouterError('CONTENT_TYPE_REQUIRED', 'Use application/json for inference requests.', 415);
+    if (request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') throw new RouterError('CONTENT_TYPE_REQUIRED', 'Use application/json for inference requests.', 415);
     const value: unknown = await readJson(request);
     const correlation: string | string[] | undefined = request.headers['x-request-id'];
     const canonical: OpenAIRequest | null = target.pathname === '/v1/inference' ? null : decodeOpenAI(target.pathname === '/v1/responses' ? 'responses' : 'chat', value, store.connections(), typeof correlation === 'string' ? correlation : undefined);
-    const input: InferenceRequest = canonical?.inference || inferenceSchema.parse(value);
+    const input: InferenceBody = canonical?.inference || inferenceSchema.parse(value);
     response.setHeader('x-request-id', input.request_id);
     const abort: AbortController = new AbortController();
     const disconnect: () => void = (): void => { if (!response.writableEnded) abort.abort(); };
@@ -84,7 +87,7 @@ export async function startRouter(store: RouterRepository, adapters: Record<Meth
     request.once('aborted', disconnect);
     try {
       const result: InferenceResult = await inference.execute(client?.id ?? store.publicState().instance_id, client ? token! : null, input, abort, checkAttachments);
-      if (canonical) { validateOpenAIResult(canonical, result); writeOpenAI(response, canonical, result); }
+      if (canonical) writeOpenAI(response, canonical, result);
       else json(response, 200, result);
     } catch (error: unknown) {
       if (abort.signal.aborted) throw new RouterError('CANCELLED', 'The inference request was cancelled.', 499);
@@ -103,7 +106,7 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     if (bytes > 36 * 1024 * 1024) throw new RouterError('REQUEST_TOO_LARGE', 'The request exceeds the supported size.', 413);
     chunks.push(buffer);
   }
-  try { return parseWireJson(Buffer.concat(chunks).toString()); }
+  try { return parseNativeJson(Buffer.concat(chunks)); }
   catch { throw new RouterError('INVALID_JSON', 'The request body must contain valid JSON.'); }
 }
 function json(response: ServerResponse, status: number, body: unknown): void {

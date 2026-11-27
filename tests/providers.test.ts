@@ -6,15 +6,17 @@ import path from 'node:path';
 import os from 'node:os';
 import { CodexAuth, ExistingCodexCredentials, codexAuthSettings, type CodexCredentials, type CredentialStore } from '../src/app/services/provider-service/providers/codex-auth.ts';
 import { CodexHttpAdapter, OpenRouterAdapter } from '../src/app/services/provider-service/providers/http-providers.ts';
-import { CodexCliAdapter, codexCatalog } from '../src/app/services/provider-service/providers/codex-cli.ts';
+import { decodeCodexCatalog } from '../src/app/services/provider-service/providers/provider-catalog.ts';
+import { CodexCliAdapter } from '../src/app/services/provider-service/providers/codex-cli.ts';
+import { stringifyWireJson } from '../src/app/common/schemas/json-wire.ts';
 import { uuid7 } from '../src/app/common/identity/identity.ts';
-import type { Connection, Continuation, InferenceRequest, InferenceResult, ProviderAdapter, ToolCall } from '../src/app/common/schemas/contracts.ts';
+import type { Connection, Continuation, InferenceRequest, InferenceResult, Model, ProviderAdapter, ToolCall } from '../src/app/common/schemas/contracts.ts';
 const directories: string[] = [];
 afterEach(async (): Promise<void> => { await Promise.all(directories.splice(0).map((directory: string): Promise<void> => rm(directory, { recursive: true, force: true }))); });
 async function temporary(): Promise<string> { const directory: string = await mkdtemp(path.join(os.tmpdir(), 'router-provider-test-')); directories.push(directory); return directory; }
 function connection(method: Connection['method']): Connection { return { id: uuid7(), name: 'Synthetic provider', method, exposed: true, models: [] }; }
 function request(target: Connection): InferenceRequest { return { request_id: uuid7(), connection_id: target.id, model: 'synthetic-model', reasoning_effort: 'low', messages: [{ role: 'system', content: 'Synthetic standing instruction.' }, { role: 'user', content: 'Synthetic question.' }], tools: [] }; }
-function credentials(expiration: number): CodexCredentials { return { auth_mode: 'chatgpt', last_refresh: new Date().toISOString(), tokens: { access_token: `header.${Buffer.from(JSON.stringify({ exp: expiration })).toString('base64url')}.signature`, refresh_token: 'synthetic-refresh', id_token: 'synthetic-identity', account_id: 'synthetic-account', login_owner_id: 'synthetic-login' } }; }
+function credentials(expiration: number): CodexCredentials { return { auth_mode: 'chatgpt', last_refresh: new Date().toISOString(), tokens: { access_token: `header.${Buffer.from(JSON.stringify({ exp: Math.floor(expiration) })).toString('base64url')}.signature`, refresh_token: 'synthetic-refresh', id_token: 'synthetic-identity', account_id: 'synthetic-account', login_owner_id: 'synthetic-login' } }; }
 async function syntheticCodex(fetcher: typeof fetch): Promise<CodexHttpAdapter> {
   const home: string = await temporary();
   let stored: CodexCredentials = credentials(Date.now() / 1000 + 3600);
@@ -29,6 +31,45 @@ const codexTextOutput: string = '[{"type":"message","role":"assistant","content"
 function codexCompletion(usage: string, output: string = codexTextOutput): string {
   return `data: {"type":"response.completed","response":{"status":"completed","output":${output},"usage":${usage}}}\n\n`;
 }
+
+const parity: {
+  openRouterToolCall: unknown;
+  grants: { label: string; source: string; tokens: Record<string, string> | null }[];
+  claims: { label: string; source: string; refresh: boolean }[];
+  catalogs: { label: string; provider: 'codex' | 'openrouter'; source: string; models: Record<string, unknown>[] | null }[];
+  providerCompletions: { label: string; provider: 'codex' | 'openrouter'; source: string; code: string | null; content?: string }[];
+} = JSON.parse(readFileSync(new URL('./fixtures/router-wire-parity.json', import.meta.url), 'utf8'));
+
+it.each(parity.catalogs)('$provider catalog $label', async ({ provider, source, models }): Promise<void> => {
+  const fetcher: typeof fetch = async (): Promise<Response> => new Response(source);
+  const adapter: ProviderAdapter = provider === 'codex' ? await syntheticCodex(fetcher) : new OpenRouterAdapter((): string => 'synthetic', fetcher);
+  const target: Connection = connection(provider === 'codex' ? 'codex_http' : 'openrouter_http');
+  const result: Promise<Model[]> = adapter.models(target, new AbortController().signal);
+  if (!models) {
+    await expect(result).rejects.toMatchObject({ status: 502, code: 'PROVIDER_RESPONSE_INVALID' });
+    return;
+  }
+  const decoded: Model[] = await result;
+  expect(decoded).toHaveLength(models.length);
+  for (const [index, model] of decoded.entries()) {
+    const expected: Record<string, unknown> = models[index]!;
+    for (const [key, value] of Object.entries(expected)) {
+      const actual: unknown = model[key as keyof Model];
+      if ((key === 'context_window' || key === 'max_output_tokens') && typeof value === 'string') {
+        expect(stringifyWireJson(actual)).toBe(value);
+      } else expect(actual).toEqual(value);
+    }
+  }
+});
+
+it.each(parity.providerCompletions)('$provider completion $label', async ({ provider, source, code, content }): Promise<void> => {
+  const fetcher: typeof fetch = async (): Promise<Response> => new Response(provider === 'codex' ? `data: ${source}\n\n` : source);
+  const adapter: ProviderAdapter = provider === 'codex' ? await syntheticCodex(fetcher) : new OpenRouterAdapter((): string => 'synthetic', fetcher);
+  const target: Connection = connection(provider === 'codex' ? 'codex_http' : 'openrouter_http');
+  const result: Promise<InferenceResult> = adapter.infer(request(target), target, new AbortController().signal);
+  if (code) await expect(result).rejects.toMatchObject({ code });
+  else await expect(result).resolves.toMatchObject({ content });
+});
 
 describe.each(['codex_http', 'openrouter_http'] as const)('%s completion and replay', (method): void => {
   const isCodex: boolean = method === 'codex_http';
@@ -98,6 +139,35 @@ describe.each(['codex_http', 'openrouter_http'] as const)('%s completion and rep
     });
 });
 describe('Codex subscription credentials', (): void => {
+  it.each(parity.grants)('$label', async ({ source, tokens }): Promise<void> => {
+    let stored: CodexCredentials = credentials(1);
+    const body: Uint8Array<ArrayBuffer> = Uint8Array.from(Buffer.from(source.replace('$INVALID_UTF8', '\xff'), 'latin1'));
+    const auth: CodexAuth = new CodexAuth(await temporary(), {
+      load: async (): Promise<CodexCredentials> => stored,
+      save: async (_expected, updated): Promise<CodexCredentials> => { stored = updated; return updated; },
+    }, async (): Promise<Response> => new Response(body));
+    if (!tokens) await expect(auth.headers()).rejects.toMatchObject({ code: 'CODEX_AUTH_EXPIRED', status: 401 });
+    else {
+      await expect(auth.headers()).resolves.toMatchObject({ Authorization: `Bearer ${tokens.access_token}` });
+      expect(stored.tokens).toMatchObject(tokens);
+    }
+  });
+
+  it.each(parity.claims)('$label', async ({ source, refresh }): Promise<void> => {
+    const stored: CodexCredentials = credentials(1);
+    stored.tokens.access_token = `header.${Buffer.from(source).toString('base64url')}.signature`;
+    let grants: number = 0;
+    const auth: CodexAuth = new CodexAuth(await temporary(), {
+      load: async (): Promise<CodexCredentials> => stored,
+      save: async (_expected, updated): Promise<CodexCredentials> => updated,
+    }, async (): Promise<Response> => {
+      grants++;
+      return Response.json({ access_token: 'rotated' });
+    });
+    await expect(auth.headers()).resolves.toMatchObject({ Authorization: `Bearer ${refresh ? 'rotated' : stored.tokens.access_token}` });
+    expect(grants).toBe(Number(refresh));
+  });
+
   it('refreshes once for simultaneous requests and preserves identity plus returned rotated tokens', async (): Promise<void> => {
     let stored: CodexCredentials = credentials(1); let exchanges: number = 0;
     const storage: CredentialStore = { load: async (): Promise<CodexCredentials> => structuredClone(stored), save: async (_expected, updated): Promise<CodexCredentials> => { stored = updated; return updated; } };
@@ -421,9 +491,9 @@ describe('HTTP inference adapters', (): void => {
   });
 });
 it('omits GPT-Reserve from the Codex catalog while retaining ordinary models', (): void => {
-  const models = codexCatalog({ models: [
+  const models: Model[] = decodeCodexCatalog(Buffer.from(JSON.stringify({ models: [
     { slug: 'gpt-reserve', display_name: 'GPT-Reserve', context_window: 32000 },
     { slug: 'gpt-example', display_name: 'GPT Example', context_window: 64000 },
-  ] });
+  ] })));
   expect(models.map((model): string => model.id)).toEqual(['gpt-example']);
 });

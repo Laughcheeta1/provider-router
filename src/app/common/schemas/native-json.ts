@@ -1,7 +1,10 @@
 /** Decode the same JSON values as the native router's default serde_json parser. */
 import { isDeepStrictEqual } from 'node:util';
-import { rememberNumberSource } from './json-wire.ts';
+import { numberSource, rememberNumberSource } from './json-wire.ts';
 import { MAX_U64 } from './token-count.ts';
+
+/** A directly deserialized Rust struct or vector, with undeclared struct fields ignored. */
+export type NativeJsonShape = { [field: string]: NativeJsonShape | true } | readonly [NativeJsonShape | true];
 
 type NativeValue = null | boolean | string | bigint | number | NativeValue[] | { [key: string]: NativeValue };
 const MIN_I64: bigint = -9_223_372_036_854_775_808n;
@@ -16,11 +19,32 @@ export function replayArgumentsEqual(expected: string, actual: string): boolean 
 }
 
 /** Decode for validation or transport with ordinary JS numbers and exact wire tokens. */
-export function parseNativeJson(source: string): unknown {
-  return readNativeJson(source, true);
+export function parseNativeJson(source: string | Uint8Array, shape?: NativeJsonShape): unknown {
+  if (typeof source === 'string') return readNativeJson(source, true, shape);
+  const decoder: TextDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  let text: string;
+  try { text = decoder.decode(source); }
+  catch (error: unknown) {
+    if (!shape) throw error;
+    // Directly deserialized structs can skip byte strings in undeclared fields.
+    // Only strings the parser reads as values or field names need valid UTF-8.
+    return readNativeJson(Buffer.from(source).toString('latin1'), true, shape, decoder);
+  }
+  return readNativeJson(text, true, shape);
 }
 
-function readNativeJson(source: string, retainNumberTokens: boolean): NativeValue {
+/** Read a native Value::Number as u64 without rounding, including when JS represents it as a float. */
+export function nativeUnsignedField(value: unknown, key: string): bigint | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const field: unknown = (value as Record<string, unknown>)[key];
+  if (typeof field !== 'number') return undefined;
+  const source: string = numberSource(value, key, field);
+  if (!/^[0-9]{1,20}$/.test(source)) return undefined;
+  const integer: bigint = BigInt(source);
+  return integer <= MAX_U64 ? integer : undefined;
+}
+
+function readNativeJson(source: string, retainNumberTokens: boolean, shape?: NativeJsonShape, byteStrings?: TextDecoder): NativeValue {
   // Parse every token, including values overwritten by duplicate keys, before comparing objects.
   const tokens: RegExp = /[ \t\r\n]*(?:-?(0|[1-9]\d*)(?:\.(\d+))?(?:[eE]([+-]?\d+))?|true|false|null|["{}\[\],:])/y;
   const stringDelimiters: RegExp = /["\\]/g;
@@ -53,14 +77,14 @@ function readNativeJson(source: string, retainNumberTokens: boolean): NativeValu
     return true;
   }
 
-  function readChild(parent: object, key: string, depth: number): NativeValue {
+  function readChild(parent: object, key: string, depth: number, childShape: NativeJsonShape | true = true): NativeValue {
     const raw: string | undefined = retainNumberTokens && next?.[1] !== undefined ? next[0].trimStart() : undefined;
-    const value: NativeValue = read(depth);
+    const value: NativeValue = read(depth, childShape);
     if (typeof value === 'number' && raw !== undefined) rememberNumberSource(parent, key, value, raw);
     return value;
   }
 
-  function read(depth: number): NativeValue {
+  function read(depth: number, node: NativeJsonShape | true): NativeValue {
     const match: RegExpExecArray | null = next;
     const token: string = take();
     if (match?.[1] !== undefined) {
@@ -69,12 +93,16 @@ function readNativeJson(source: string, retainNumberTokens: boolean): NativeValu
     }
     if (token === 'null') return null;
     if (token === 'true' || token === 'false') return token === 'true';
-    if (token.startsWith('"')) return nativeString(token);
+    if (token.startsWith('"')) return nativeString(token, byteStrings);
     if (depth === 127) throw new SyntaxError('JSON arguments exceed the native nesting limit.');
     if (token === '[') {
       const values: NativeValue[] = [];
       if (takeIf(']')) return values;
-      do { values.push(readChild(values, String(values.length), depth + 1)); } while (takeIf(','));
+      const fields: (NativeJsonShape | true)[] | undefined = node === true ? undefined : Object.values(node);
+      do {
+        const field: NativeJsonShape | true = Array.isArray(node) ? node[0] : fields?.[values.length] ?? true;
+        values.push(readChild(values, String(values.length), depth + 1, field));
+      } while (takeIf(','));
       if (takeIf(']')) return values;
     }
 
@@ -82,9 +110,18 @@ function readNativeJson(source: string, retainNumberTokens: boolean): NativeValu
       const values: Record<string, NativeValue> = Object.create(null) as Record<string, NativeValue>;
       if (takeIf('}')) return values;
       do {
-        const key: string = nativeString(take());
+        const key: string = nativeString(take(), byteStrings);
         if (!takeIf(':')) throw new SyntaxError('Invalid JSON object.');
-        values[key] = readChild(values, key, depth + 1);
+        if (node !== true && !Array.isArray(node)) {
+          if (!Object.hasOwn(node, key)) {
+            skipValue();
+            continue;
+          }
+          if (Object.hasOwn(values, key)) throw new SyntaxError('Duplicate JSON field.');
+          values[key] = readChild(values, key, depth + 1, (node as Record<string, NativeJsonShape | true>)[key]);
+        } else {
+          values[key] = readChild(values, key, depth + 1);
+        }
       } while (takeIf(','));
       if (takeIf('}')) return values;
     }
@@ -92,14 +129,27 @@ function readNativeJson(source: string, retainNumberTokens: boolean): NativeValu
     throw new SyntaxError('Invalid JSON argument.');
   }
 
-  const value: NativeValue = read(0);
+  // An ignored field only needs JSON syntax, including when its value cannot form a native Value.
+  function skipValue(): void {
+    const start: number = consumed;
+    let nesting: number = 0;
+    do {
+      const token: string = take();
+      if (token === '{' || token === '[') nesting++;
+      if (token === '}' || token === ']') nesting--;
+    } while (nesting > 0);
+    const skipped: string = source.slice(start, consumed);
+    JSON.parse(skipped);
+  }
+
+  const value: NativeValue = read(0, shape ?? true);
   if (/[^ \t\r\n]/.test(source.slice(consumed))) throw new SyntaxError('Invalid JSON argument.');
   return value;
 }
 
-function nativeString(token: string): string {
+function nativeString(token: string, byteStrings?: TextDecoder): string {
   if (!token.startsWith('"')) throw new SyntaxError('Expected a JSON string.');
-  const value: string = JSON.parse(token) as string;
+  const value: string = JSON.parse(byteStrings ? byteStrings.decode(Buffer.from(token, 'latin1')) : token) as string;
   if (/[\uD800-\uDFFF]/u.test(value)) throw new SyntaxError('Invalid Unicode in JSON argument.');
   return value;
 }

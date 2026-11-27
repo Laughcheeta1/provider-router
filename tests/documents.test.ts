@@ -90,7 +90,7 @@ describe('attachment messages', () => {
     await expect(extract('report.pdf', 'application/pdf', Buffer.from('stub'), { ...model, input_modalities: ['text'] })).rejects.toMatchObject({ code: 'FILE_IMAGES_UNSUPPORTED' });
     await expect(extract('bogus.exe', 'text/plain', Buffer.from('example'))).rejects.toMatchObject({ code: 'FILE_TYPE_UNSUPPORTED' });
     await expect(extract('notes.txt', 'text/plain', Buffer.from('a'.repeat(10 * 1024 * 1024 + 1)))).rejects.toMatchObject({ code: 'FILE_REQUEST_LIMIT' });
-    await expect(extract('notes.txt', 'text/plain', Buffer.alloc(model.context_window + 1, 97))).rejects.toMatchObject({ code: 'FILE_CONTEXT_LIMIT' });
+    await expect(extract('notes.txt', 'text/plain', Buffer.alloc(Number(model.context_window) + 1, 97))).rejects.toMatchObject({ code: 'FILE_CONTEXT_LIMIT' });
   }, 15_000);
 });
 const publicFixtures: string | undefined = process.env.PROVIDER_ROUTER_PUBLIC_FIXTURES;

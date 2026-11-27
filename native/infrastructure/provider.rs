@@ -907,6 +907,95 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn wire_parity_fixtures() -> Value {
+        serde_json::from_str(include_str!("../../tests/fixtures/router-wire-parity.json")).unwrap()
+    }
+
+    #[test]
+    fn provider_catalogs_share_wire_parity_fixtures() {
+        for fixture in wire_parity_fixtures()["catalogs"].as_array().unwrap() {
+            let source = fixture["source"].as_str().unwrap();
+            let result: serde_json::Result<Vec<Model>> = match fixture["provider"].as_str().unwrap()
+            {
+                "codex" => serde_json::from_str::<CodexCatalog>(source)
+                    .map(|catalog| catalog.models.into_iter().filter_map(codex_model).collect()),
+                "openrouter" => serde_json::from_str::<OpenRouterCatalog>(source).map(|catalog| {
+                    catalog
+                        .data
+                        .into_iter()
+                        .filter_map(openrouter_model)
+                        .collect()
+                }),
+                _ => unreachable!(),
+            };
+            let label = &fixture["label"];
+            let expected = &fixture["models"];
+            assert_eq!(result.is_ok(), expected.is_array(), "{label}: {result:?}");
+            if let Ok(models) = result {
+                let expected = expected.as_array().unwrap();
+                assert_eq!(models.len(), expected.len(), "{label}");
+                for (model, fields) in models.into_iter().zip(expected) {
+                    let model = serde_json::to_value(model).unwrap();
+                    for (key, expected) in fields.as_object().unwrap() {
+                        if matches!(key.as_str(), "context_window" | "max_output_tokens")
+                            && let Some(raw) = expected.as_str()
+                        {
+                            assert_eq!(model[key].to_string(), raw, "{label}: {key}");
+                        } else {
+                            assert_eq!(&model[key], expected, "{label}: {key}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn provider_completions_share_wire_parity_fixtures() {
+        for fixture in wire_parity_fixtures()["providerCompletions"]
+            .as_array()
+            .unwrap()
+        {
+            let source = fixture["source"].as_str().unwrap();
+            let result = (|| match fixture["provider"].as_str().unwrap() {
+                "codex" => {
+                    let data = format!("data: {source}\n\n");
+                    codex_output(
+                        CodexSse::default()
+                            .feed(data.as_bytes())?
+                            .ok_or_else(incomplete)?,
+                    )
+                }
+                "openrouter" => {
+                    let value: Value =
+                        serde_json::from_str(source).map_err(|_| invalid_response())?;
+                    if let Some(error) = openrouter_body_error(&value) {
+                        return Err(upstream_body_failure(error));
+                    }
+                    let decoded = serde_json::from_value(value).map_err(|_| invalid_response())?;
+                    let output = openrouter_output(&decoded)?;
+                    serde_json::from_value::<Vec<crate::application::contracts::ToolCall>>(json!(
+                        output.calls
+                    ))
+                    .map_err(|_| failure(502, "INVALID_COMPLETION", "Invalid tool calls."))?;
+                    Ok(output)
+                }
+                _ => unreachable!(),
+            })();
+            let label = &fixture["label"];
+            match result {
+                Ok(output) => {
+                    assert!(fixture["code"].is_null(), "{label}");
+                    assert_eq!(output.content, fixture["content"], "{label}");
+                }
+                Err(error) => {
+                    let code = error.downcast_ref::<ProviderError>().unwrap().code;
+                    assert_eq!(code, fixture["code"], "{label}: {error}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn codex_catalog_skips_internal_models() {
         let catalog: CodexCatalog = serde_json::from_value(json!({"models": [

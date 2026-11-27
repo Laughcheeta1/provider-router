@@ -1,4 +1,6 @@
 /** Send settings commands to the owning process, or work offline under the same profile lock. */
+import { parseNativeJson } from '../common/schemas/native-json.ts';
+import { stringifyWireJson } from '../common/schemas/json-wire.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { request, type ClientRequest, type IncomingMessage } from 'node:http';
@@ -107,7 +109,7 @@ export class ControlClient implements SettingsBridge {
   private async online(command: SettingsCommand): Promise<SettingsReply | undefined> {
     let response: IncomingMessage;
     try {
-      response = await this.connect('POST', '/settings', JSON.stringify(command));
+      response = await this.connect('POST', '/settings', stringifyWireJson(command));
     } catch (error: unknown) {
       if (isUnavailable(error)) return undefined;
       throw error;
@@ -115,7 +117,7 @@ export class ControlClient implements SettingsBridge {
 
     const chunks: Buffer[] = [];
     for await (const chunk of response) chunks.push(Buffer.from(chunk));
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as SettingsReply;
+    return parseNativeJson(Buffer.concat(chunks)) as SettingsReply;
   }
 }
 

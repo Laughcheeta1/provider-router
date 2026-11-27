@@ -2,23 +2,25 @@
 import { z } from 'zod';
 import { resolveWslCredentialHome } from './wsl-codex.ts';
 import { CodexAuth, ExistingCodexCredentials, codexHome } from './codex-auth.ts';
-import { codexCatalog } from './codex-cli.ts';
-import { copyNumberSources, numberSource, stringifyWireJson } from '../../../common/schemas/json-wire.ts';
-import { parseNativeJson, replayArgumentsEqual } from '../../../common/schemas/native-json.ts';
-import { MAX_U64, tokenCount } from '../../../common/schemas/token-count.ts';
+import { MAX_PROVIDER_BYTES, providerOutputLimit, readProviderBody } from './provider-body.ts';
+import { decodeCodexCatalog, decodeOpenRouterCatalog } from './provider-catalog.ts';
+import { copyNumberSources, stringifyWireJson } from '../../../common/schemas/json-wire.ts';
+import { nativeUnsignedField, parseNativeJson, replayArgumentsEqual } from '../../../common/schemas/native-json.ts';
+import { tokenCount, tokenCountSchema } from '../../../common/schemas/token-count.ts';
+import { nativeStruct, nativeStructObject } from '../../../common/schemas/native-struct.ts';
 import { completionToolCallSchema, providerStateValueSchema, RouterError, type Connection, type Continuation, type InferenceRequest, type InferenceResult, type Message, type Model, type ProviderAdapter, type ToolCall } from '../../../common/schemas/contracts.ts';
 
 const OPENROUTER_URL: string = 'https://openrouter.ai/api/v1';
 const CODEX_URL: string = 'https://chatgpt.com/backend-api/codex';
-const MAX_PROVIDER_BYTES: number = 16_777_216;
 const SSE_DATA_PREFIX: Buffer = Buffer.from('data:');
 const SSE_NEWLINE: Buffer = Buffer.from('\n');
 const SSE_DONE: Buffer = Buffer.from('[DONE]');
-const chatDecoder = z.object({
-  choices: z.array(z.object({ finish_reason: z.string().nullish(), message: z.object({ content: z.string().nullish(), tool_calls: z.array(providerStateValueSchema).nullish(), reasoning_details: z.unknown().optional(), reasoning: z.unknown().optional() }) })).min(1),
-  usage: z.unknown(),
+const chatMessage = z.object({ content: z.string().nullish(), tool_calls: z.array(providerStateValueSchema).nullish(), reasoning: z.unknown().optional(), reasoning_details: z.unknown().optional() });
+const chatDecoder = nativeStruct(z.object({
+  choices: z.array(nativeStruct(z.object({ finish_reason: z.string().nullish(), message: nativeStruct(chatMessage) }))).min(1),
+  usage: nativeStruct(z.object({ prompt_tokens: tokenCountSchema, completion_tokens: tokenCountSchema, prompt_tokens_details: z.unknown().optional() }), undefined, undefined, ['prompt_tokens', 'completion_tokens']),
   provider: z.string().nullish(), model: z.string().nullish(), openrouter_metadata: z.unknown().optional(),
-});
+}));
 type OpenRouterCompletion = z.infer<typeof chatDecoder>;
 type OpenRouterState = Extract<Continuation['state'], { format: 'openrouter_chat' }>;
 const providerToolCalls = z.array(completionToolCallSchema);
@@ -35,7 +37,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
       model, messages, stream: false,
       ...(request.tools.length ? { tools: request.tools } : {}),
       ...(request.response_format ? { response_format: request.response_format } : {}),
-      ...(request.reasoning_effort ? { reasoning: { effort: request.reasoning_effort } } : {}),
+      ...(request.reasoning_effort !== undefined ? { reasoning: { effort: request.reasoning_effort } } : {}),
       ...(request.max_output_tokens ? { max_tokens: request.max_output_tokens } : {}),
       provider: { require_parameters: true, ...(route ? { only: [route.upstream], allow_fallbacks: false } : {}) },
       ...(request.session_id ? { session_id: request.session_id } : {}),
@@ -46,7 +48,10 @@ export class OpenRouterAdapter implements ProviderAdapter {
     const response: Response = await providerTransport(this.fetcher(`${this.base}/chat/completions`, { method: 'POST', redirect: 'error', headers: { ...headers, 'X-OpenRouter-Metadata': 'enabled' }, body: stringifyWireJson(payload), signal }), signal);
     requireSuccess(response);
     const decoded: OpenRouterCompletion = await openRouterCompletion(response, signal);
-    const usage: InferenceResult['usage'] = providerUsage(decoded.usage, 'prompt_tokens', 'completion_tokens', 'prompt_tokens_details');
+    const usage: InferenceResult['usage'] = {
+      input_tokens: decoded.usage.prompt_tokens, output_tokens: decoded.usage.completion_tokens,
+      ...cacheUsage(decoded.usage.prompt_tokens_details),
+    };
     const choice: OpenRouterCompletion['choices'][number] = decoded.choices[0]!;
     if (choice.finish_reason !== 'stop' && choice.finish_reason !== 'tool_calls') throw incomplete();
     const { reasoning_details, reasoning, content, tool_calls } = choice.message;
@@ -68,7 +73,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
     return {
       request_id: request.request_id, content: content ?? '', tool_calls: calls.data, usage,
       provider: 'openrouter', method: 'openrouter_http', model: request.model,
-      ...(request.reasoning_effort ? { reasoning_effort: request.reasoning_effort } : {}),
+      ...(request.reasoning_effort !== undefined ? { reasoning_effort: request.reasoning_effort } : {}),
       ...(continuation ? { continuation } : {}),
     };
   }
@@ -102,11 +107,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
   async models(connection: Connection, signal: AbortSignal): Promise<Model[]> {
     const response: Response = await providerTransport(this.fetcher(`${this.base}/models`, { headers: this.headers(connection), redirect: 'error', signal }), signal);
     requireSuccess(response);
-    const catalog = z.object({ data: z.array(z.object({ architecture: z.object({ input_modalities: z.array(z.string()) }).optional(), id: z.string(), name: z.string(), context_length: z.number().int().positive(), top_provider: z.object({ max_completion_tokens: z.number().int().positive().nullable() }), supported_parameters: z.array(z.string()).default([]), reasoning: z.object({ supported_efforts: z.array(z.string()).nullable().optional(), default_effort: z.string().nullable().optional(), mandatory: z.boolean().optional() }).optional() })) }).parse(await response.json());
-    return catalog.data.map((entry): Model => ({
-      id: entry.id, name: entry.name, reasoning_efforts: (entry.reasoning?.supported_efforts === null ? ['max', 'xhigh', 'high', 'medium', 'low', 'minimal', 'none'] : entry.reasoning?.supported_efforts || []).filter((effort: string): boolean => !entry.reasoning?.mandatory || effort !== 'none'), default_reasoning_effort: entry.reasoning?.default_effort || null,
-      context_window: entry.context_length, max_output_tokens: entry.top_provider.max_completion_tokens || Math.floor(entry.context_length / 5), tools: entry.supported_parameters.includes('tools'), structured_output: entry.supported_parameters.includes('structured_outputs'), input_modalities: entry.architecture?.input_modalities.includes('image') ? ['text', 'image'] : ['text'],
-    }));
+    return decodeOpenRouterCatalog(await providerBytes(response, signal));
   }
 
   private headers(connection: Connection): Record<string, string> {
@@ -148,7 +149,7 @@ export class CodexHttpAdapter implements ProviderAdapter {
       tools: request.tools.map((tool) => ({ type: 'function', ...tool.function })),
       include: ['reasoning.encrypted_content'],
       ...(request.session_id ? { prompt_cache_key: request.session_id } : {}),
-      ...(request.reasoning_effort ? { reasoning: { effort: request.reasoning_effort, summary: 'auto' } } : {}),
+      ...(request.reasoning_effort !== undefined ? { reasoning: { effort: request.reasoning_effort, summary: 'auto' } } : {}),
     };
     if (request.tool_choice) payload.tool_choice = typeof request.tool_choice === 'object' ? { type: 'function', name: request.tool_choice.function.name } : request.tool_choice;
     if (request.parallel_tool_calls !== undefined) payload.parallel_tool_calls = request.parallel_tool_calls;
@@ -183,14 +184,14 @@ export class CodexHttpAdapter implements ProviderAdapter {
       request_id: request.request_id, content: texts.join(''), tool_calls: calls,
       usage: providerUsage(completed.usage, 'input_tokens', 'output_tokens', 'input_tokens_details'),
       provider: 'codex', method: 'codex_http', model: request.model,
-      ...(request.reasoning_effort ? { reasoning_effort: request.reasoning_effort } : {}),
+      ...(request.reasoning_effort !== undefined ? { reasoning_effort: request.reasoning_effort } : {}),
       continuation: { connection_id: connection.id, model: request.model, state: { format: 'codex_responses', items: output } },
     };
   }
 
   async models(connection: Connection, signal: AbortSignal): Promise<Model[]> {
     const response: Response = await this.request(connection, '/models?client_version=0.167.0', { signal });
-    return codexCatalog(await response.json());
+    return decodeCodexCatalog(await providerBytes(response, signal));
   }
 
   private async request(connection: Connection, route: string, init: RequestInit & { headers?: Record<string, string> }): Promise<Response> {
@@ -213,25 +214,20 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function unsignedField(value: unknown, name: string): bigint | undefined {
-  const fields: Record<string, unknown> | undefined = object(value);
-  const field: unknown = fields?.[name];
-  if (!fields || typeof field !== 'number') return undefined;
-  const source: string = numberSource(fields, name, field);
-  if (!/^\d{1,20}$/.test(source)) return undefined;
-  const integer: bigint = BigInt(source);
-  return integer <= MAX_U64 ? integer : undefined;
-}
-
 function providerUsage(value: unknown, input: string, output: string, detailsField: string): InferenceResult['usage'] {
-  const inputTokens: bigint | undefined = unsignedField(value, input);
-  const outputTokens: bigint | undefined = unsignedField(value, output);
+  const inputTokens: bigint | undefined = nativeUnsignedField(value, input);
+  const outputTokens: bigint | undefined = nativeUnsignedField(value, output);
   if (inputTokens === undefined || outputTokens === undefined) throw invalidProviderResponse();
-  const details: unknown = object(value)?.[detailsField];
-  const cached: bigint | undefined = unsignedField(details, 'cached_tokens');
-  const written: bigint | undefined = unsignedField(details, 'cache_write_tokens');
   return {
     input_tokens: tokenCount(inputTokens), output_tokens: tokenCount(outputTokens),
+    ...cacheUsage(object(value)?.[detailsField]),
+  };
+}
+
+function cacheUsage(details: unknown): Partial<InferenceResult['usage']> {
+  const cached: bigint | undefined = nativeUnsignedField(details, 'cached_tokens');
+  const written: bigint | undefined = nativeUnsignedField(details, 'cache_write_tokens');
+  return {
     ...(cached !== undefined ? { cached_input_tokens: tokenCount(cached) } : {}),
     ...(written !== undefined ? { cache_write_tokens: tokenCount(written) } : {}),
   };
@@ -348,8 +344,7 @@ async function providerTransport<T>(operation: Promise<T>, signal?: AbortSignal 
 
 function parseProviderJson(bytes: Uint8Array): unknown {
   try {
-    const text: string = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-    return parseNativeJson(text);
+    return parseNativeJson(bytes);
   } catch { throw invalidProviderResponse(); }
 }
 
@@ -367,30 +362,24 @@ async function openRouterCompletion(response: Response, signal: AbortSignal): Pr
   // Inspect the selected error before requiring a complete choice or usage.
   const error: unknown = completion?.error ?? object(firstChoice)?.error;
   if (error != null) {
-    const status: bigint | undefined = unsignedField(error, 'code');
+    const status: bigint | undefined = nativeUnsignedField(error, 'code');
     throw status !== undefined && status >= 400n && status <= 599n ? statusFailure(Number(status)) : incomplete();
   }
   const decoded: OpenRouterCompletion = decodeProviderResponse(chatDecoder, value);
-  const rawMessage: Record<string, unknown> | undefined = object(object(firstChoice)?.message);
+  const rawCompletion: Record<string, unknown> | undefined = object(nativeStructObject(value, ['choices', 'usage', 'provider', 'model', 'openrouter_metadata']));
+  const rawChoice: unknown = Array.isArray(rawCompletion?.choices) ? rawCompletion.choices[0] : undefined;
+  const rawChoiceFields: Record<string, unknown> | undefined = object(nativeStructObject(rawChoice, ['finish_reason', 'message']));
+  const rawMessage: Record<string, unknown> | undefined = object(nativeStructObject(rawChoiceFields?.message, Object.keys(chatMessage.shape)));
   if (rawMessage) copyNumberSources(decoded.choices[0]!.message, rawMessage);
   return decoded;
 }
 
 async function providerJson(response: Response, signal: AbortSignal): Promise<unknown> {
-  let received: number = 0;
-  const body: ReadableStream<Uint8Array> | undefined = response.body?.pipeThrough(new TransformStream({
-    transform(chunk: Uint8Array, controller: TransformStreamDefaultController<Uint8Array>): void {
-      received += chunk.byteLength;
-      if (received > MAX_PROVIDER_BYTES) throw providerOutputLimit();
-      controller.enqueue(chunk);
-    },
-  }));
-  const bytes: ArrayBuffer = await providerTransport(new Response(body).arrayBuffer(), signal);
-  return parseProviderJson(new Uint8Array(bytes));
+  return parseProviderJson(await providerBytes(response, signal));
 }
 
-function providerOutputLimit(): RouterError {
-  return new RouterError('PROVIDER_OUTPUT_LIMIT', 'The provider response exceeded the supported size.', 502);
+function providerBytes(response: Response, signal: AbortSignal): Promise<Uint8Array> {
+  return providerTransport(readProviderBody(response), signal);
 }
 
 function codexStreamFailure(error: unknown): RouterError {
@@ -449,7 +438,7 @@ async function completedResponse(response: Response, signal: AbortSignal): Promi
         }
         if (event?.type === 'response.output_item.done') {
           const item: Record<string, unknown> | undefined = object(event.item);
-          if (item) completedItems.set(unsignedField(event, 'output_index') ?? BigInt(completedItems.size), item);
+          if (item) completedItems.set(nativeUnsignedField(event, 'output_index') ?? BigInt(completedItems.size), item);
         }
       }
     }

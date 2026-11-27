@@ -15,7 +15,7 @@ const openrouter: Connection = { id: uuid7(), name: 'OpenRouter test', method: '
 const store: RouterStore = await RouterStore.open(directory, { encrypt: Buffer.from, decrypt: (value: Buffer): string => value.toString() });
 await store.saveConnection(codex);
 await store.saveConnection(openrouter);
-const encoded: string = Buffer.from(JSON.stringify({ exp: Date.now() / 1000 + 3600 })).toString('base64url');
+const encoded: string = Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url');
 await writeFile(join(directory, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
   access_token: `header.${encoded}.signature`, refresh_token: 'synthetic-refresh', account_id: 'synthetic-account',
 } }));

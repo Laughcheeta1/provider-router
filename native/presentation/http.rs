@@ -351,6 +351,105 @@ mod tests {
             std::future::pending().await
         }
     }
+    struct WireBackend(State);
+
+    impl InferenceBackend for WireBackend {
+        fn settings(&self) -> anyhow::Result<State> {
+            Ok(self.0.clone())
+        }
+        async fn prepare_documents(
+            &self,
+            messages: Vec<Message>,
+            _: &Model,
+        ) -> Outcome<Vec<Message>> {
+            Ok(messages)
+        }
+        async fn complete(&self, _: &Connection, request: &Inference) -> Outcome<Completion> {
+            Ok(Completion {
+                request_id: request.request_id,
+                content: r#"{"answer":42}"#.into(),
+                tool_calls: vec![],
+                usage: crate::application::contracts::Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                    cached_input_tokens: None,
+                    cache_write_tokens: None,
+                },
+                provider: "codex".into(),
+                method: "codex_http".into(),
+                model: request.model.clone(),
+                reasoning_effort: request.reasoning_effort.clone(),
+                continuation: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn public_request_decoders_share_wire_parity_fixtures() -> anyhow::Result<()> {
+        let mut connection = Connection::new(ProviderMethod::Codex);
+        connection.exposed = true;
+        connection.models.push(Model {
+            id: "test-model".into(),
+            name: "Test model".into(),
+            reasoning_efforts: vec!["low".into()],
+            default_reasoning_effort: Some("low".into()),
+            context_window: 32_000,
+            max_output_tokens: 4_000,
+            tools: true,
+            structured_output: true,
+            input_modalities: vec!["text".into()],
+        });
+        let id = connection.id;
+        let api = Arc::new(Api(InferenceService::new(
+            WireBackend(State {
+                connections: vec![connection],
+                ..State::default()
+            }),
+            CancellationToken::new(),
+        )));
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/router-wire-parity.json"))?;
+        for fixture in fixtures["requests"].as_array().unwrap() {
+            let surface = fixture["surface"].as_str().unwrap();
+            let source = fixture["source"]
+                .as_str()
+                .unwrap()
+                .replace("$REQUEST_ID", &Uuid::now_v7().to_string())
+                .replace("$CONNECTION_ID", &id.to_string())
+                .replace("$SIMPLE_CONNECTION_ID", &id.simple().to_string());
+            let bytes = match source.split_once("$INVALID_UTF8") {
+                Some((before, after)) => [before.as_bytes(), &[0xff], after.as_bytes()].concat(),
+                None => source.into_bytes(),
+            };
+            let request = axum::http::Request::post(format!("/v1/{surface}"))
+                .header(
+                    header::CONTENT_TYPE,
+                    fixture["contentType"]
+                        .as_str()
+                        .unwrap_or("application/json"),
+                )
+                .body(Body::from(bytes))?;
+            let response = dispatch(ExtractState(api.clone()), request).await;
+            let successful = response.status().is_success();
+            let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
+            assert_eq!(
+                body["error"]["code"], fixture["code"],
+                "{surface}: {}",
+                fixture["label"]
+            );
+            assert_eq!(
+                successful,
+                fixture["code"].is_null(),
+                "{surface}: {}",
+                fixture["label"]
+            );
+            if fixture["tools"].is_array() {
+                assert_eq!(body["tools"], fixture["tools"], "{}", fixture["label"]);
+            }
+        }
+        Ok(())
+    }
+
     #[tokio::test(start_paused = true)]
     async fn deadline_and_client_cancel_have_distinct_http_errors() -> anyhow::Result<()> {
         let mut connection = Connection::new(ProviderMethod::Codex);

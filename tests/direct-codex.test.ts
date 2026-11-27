@@ -17,7 +17,7 @@ it('migrates CLI identities and sends only caller input directly to the subscrip
     const model: Model = { id: 'gpt-6.1-sol', name: 'Sol', reasoning_efforts: ['low'], default_reasoning_effort: 'low', context_window: 500000, max_output_tokens: 100000, tools: true, structured_output: true, input_modalities: ['text'] };
     const original: Record<string, unknown> = { id, name: 'Existing subscription', method: 'codex_cli', exposed: true, models: [model], codex_home: directory, environment: 'native' };
     await writeFile(path.join(directory, 'settings.json'), JSON.stringify({ version: 1, instance_id: uuid7(), connections: [original], clients: [], secrets: {}, network: { require_api_key: false, browser_origins: ['https://antikythera.example'] } }));
-    const access: string = `header.${Buffer.from(JSON.stringify({ exp: Date.now() / 1000 + 3600 })).toString('base64url')}.signature`;
+    const access: string = `header.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.signature`;
     await writeFile(path.join(directory, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: access, refresh_token: 'synthetic-refresh', account_id: 'synthetic-account' } }));
     const store: RouterStore = await RouterStore.open(directory, { encrypt: Buffer.from, decrypt: (value: Buffer): string => value.toString() });
     expect(store.connections()).toEqual([{ ...original, method: 'codex_http' }]);

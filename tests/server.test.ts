@@ -11,7 +11,11 @@ import { uuid7 } from '../src/app/common/identity/identity.ts';
 import type { Connection, Continuation, InferenceRequest, InferenceResult, Message, Model, ProviderAdapter, Tool } from '../src/app/common/schemas/contracts.ts';
 import { CodexAuth, type CodexCredentials } from '../src/app/services/provider-service/providers/codex-auth.ts';
 import { CodexHttpAdapter, OpenRouterAdapter } from '../src/app/services/provider-service/providers/http-providers.ts';
-const parity: { toolArguments: { label: string; source: string; accepted: boolean }[]; responsesHistory: unknown[] } = JSON.parse(
+const parity: {
+  toolArguments: { label: string; source: string; accepted: boolean }[];
+  requests: { label: string; surface: string; source: string; code: string | null; contentType?: string; tools?: unknown[] }[];
+  responsesHistory: unknown[];
+} = JSON.parse(
   readFileSync(new URL('./fixtures/router-wire-parity.json', import.meta.url), 'utf8'),
 );
 const directories: string[] = [];
@@ -38,6 +42,36 @@ function syntheticCodex(fetcher: typeof fetch): CodexHttpAdapter {
   }, async (): Promise<never> => { throw new Error('Unexpected credential refresh.'); }));
 }
 describe('Provider Router API', (): void => {
+  it('applies native JSON and DTO rules across the public request surfaces', async (): Promise<void> => {
+    const { listener, token, connection } = await fixture();
+    for (const { label, surface, source, code, contentType, tools } of parity.requests) {
+      const body: string = source.replace('$REQUEST_ID', uuid7()).replace('$CONNECTION_ID', connection.id)
+        .replace('$SIMPLE_CONNECTION_ID', connection.id.replaceAll('-', ''));
+      const invalidUtf8: boolean = body.includes('$INVALID_UTF8');
+      const bytes: Uint8Array<ArrayBuffer> = Uint8Array.from(invalidUtf8
+        ? Buffer.from(body.replace('$INVALID_UTF8', '\xff'), 'latin1') : Buffer.from(body));
+      const response: Response = await fetch(`${listener.endpoint}/v1/${surface}`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType ?? 'application/json' }, body: bytes,
+      });
+      const output: { error?: { code: string }; tools?: unknown[] } = await response.json();
+      expect(output.error?.code ?? null, `${surface}: ${label}`).toBe(code);
+      expect(response.ok, `${surface}: ${label}`).toBe(code === null);
+      if (tools) expect(output.tools, label).toEqual(tools);
+    }
+  });
+
+  it.each(parity.toolArguments)('uses native JSON acceptance for structured answers with $label', async ({ source, accepted }): Promise<void> => {
+    const { listener, token, connection } = await fixture(async (input: InferenceRequest): Promise<InferenceResult> => ({
+      request_id: input.request_id, model: input.model, content: source, tool_calls: [],
+      usage: { input_tokens: 2, output_tokens: 1 }, provider: 'codex', method: 'codex_http',
+    }));
+    const response: Response = await post(listener.endpoint, token, {
+      ...request(connection), response_format: { type: 'json_schema', json_schema: { name: 'answer', schema: { type: 'object' } } },
+    });
+    expect(response.status).toBe(accepted ? 200 : 502);
+    expect(await response.json()).toMatchObject(accepted ? { content: source } : { error: { code: 'INVALID_COMPLETION' } });
+  });
+
   it.each(parity.toolArguments)('validates $label before publishing tool calls for continuation', async ({ source, accepted }): Promise<void> => {
     const call: Record<string, string> = { type: 'function_call', call_id: 'call-1', name: 'lookup', arguments: source };
     const upstreamInputs: unknown[] = [];
