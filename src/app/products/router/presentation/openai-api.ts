@@ -141,9 +141,6 @@ function responseMessages(input: z.infer<typeof responseInputSchema>): Message[]
     if ('role' in item) {
       if (item.role === 'tool' || (item.type != null && item.type !== 'message')) throw new RouterError('INVALID_REQUEST', 'The request does not match the API contract.');
       if (typeof item.content === 'string') return { role: item.role, content: item.content };
-      if (!item.content.some((part): boolean => part.type === 'input_file')) {
-        return { role: item.role, content: item.content.map((part): string => 'text' in part ? part.text : '').join('\n') };
-      }
       return { role: item.role, content: item.content.map((part): Record<string, unknown> => part.type === 'input_file'
         ? { type: 'file', file: { filename: part.filename, file_data: part.file_data } }
         : { type: 'text', text: part.text }) };

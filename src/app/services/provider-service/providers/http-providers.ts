@@ -3,8 +3,8 @@ import { z } from 'zod';
 import { resolveWslCredentialHome } from './wsl-codex.ts';
 import { CodexAuth, ExistingCodexCredentials, codexHome } from './codex-auth.ts';
 import { codexCatalog } from './codex-cli.ts';
-import { parseNativeProviderJson, replayArgumentsEqual } from './native-json.ts';
 import { copyNumberSources, numberSource, stringifyWireJson } from '../../../common/schemas/json-wire.ts';
+import { parseNativeJson, replayArgumentsEqual } from '../../../common/schemas/native-json.ts';
 import { MAX_U64, tokenCount } from '../../../common/schemas/token-count.ts';
 import { completionToolCallSchema, providerStateValueSchema, RouterError, type Connection, type Continuation, type InferenceRequest, type InferenceResult, type Message, type Model, type ProviderAdapter, type ToolCall } from '../../../common/schemas/contracts.ts';
 
@@ -349,7 +349,7 @@ async function providerTransport<T>(operation: Promise<T>, signal?: AbortSignal 
 function parseProviderJson(bytes: Uint8Array): unknown {
   try {
     const text: string = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-    return parseNativeProviderJson(text);
+    return parseNativeJson(text);
   } catch { throw invalidProviderResponse(); }
 }
 

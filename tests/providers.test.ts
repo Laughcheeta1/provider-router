@@ -1,5 +1,6 @@
 /** Provider wire contracts and OAuth rotation use deterministic synthetic endpoints. */
 import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -308,20 +309,21 @@ describe('HTTP inference adapters', (): void => {
     expect(result).not.toHaveProperty('continuation');
     expect(result.usage).toEqual({ input_tokens: 5, output_tokens: 2 });
   });
-  it('preserves OpenRouter tool metadata in continuation while returning normalized function calls', async (): Promise<void> => {
+  it('rejects OpenRouter tool calls with unknown fields', async (): Promise<void> => {
     const target: Connection = connection('openrouter_http');
-    const call: ToolCall = { id: 'call-1', type: 'function', function: { name: 'lookup', arguments: '{}' } };
-    const rawCall: ToolCall & { provider_metadata: { signature: string } } = { ...call, provider_metadata: { signature: 'synthetic' } };
+    const { openRouterToolCall }: { openRouterToolCall: unknown } = JSON.parse(
+      readFileSync(new URL('./fixtures/router-wire-parity.json', import.meta.url), 'utf8'),
+    );
     const adapter: OpenRouterAdapter = new OpenRouterAdapter((): string => 'synthetic-key', async (_url, init): Promise<Response> => {
       if (!init?.method) return Response.json({ data: { endpoints: [{ tag: 'synthetic' }] } });
       return Response.json({ provider: 'synthetic', model: 'synthetic/resolved', choices: [
-        { finish_reason: 'tool_calls', message: { tool_calls: [rawCall], reasoning: 'Synthetic reasoning' } },
+        { finish_reason: 'tool_calls', message: { tool_calls: [openRouterToolCall], reasoning: 'Synthetic reasoning' } },
         { finish_reason: 'stop', message: { tool_calls: [null] } },
       ], usage: { prompt_tokens: 5, completion_tokens: 2 } });
     });
-    const result: InferenceResult = await adapter.infer(request(target), target, AbortSignal.timeout(1000));
-    expect(result.tool_calls).toEqual([call]);
-    expect(result.continuation?.state).toMatchObject({ format: 'openrouter_chat', message: { tool_calls: [rawCall] } });
+    await expect(adapter.infer(request(target), target, AbortSignal.timeout(1000))).rejects.toMatchObject({
+      status: 502, code: 'INVALID_COMPLETION',
+    });
   });
 
   it.each([{ type: 'output_text' }, { type: 'output_text', text: 5 }])('rejects malformed Codex output_text after valid text (%j)', async (invalid): Promise<void> => {

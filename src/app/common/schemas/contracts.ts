@@ -31,8 +31,8 @@ export type Connection = z.infer<typeof connectionSchema>;
 /** Local provider availability contains no credential material or inferred model access. */
 export interface DetectedProvider { connection: Connection; status: 'ready' | 'login_required' | 'not_installed'; detail: string }
 const toolInvocationSchema = z.object({ name: z.string(), arguments: z.string() }).strict();
-export const completionToolCallSchema = z.object({ id: z.string(), type: z.literal('function'), function: toolInvocationSchema });
-export const toolCallSchema = completionToolCallSchema.strict().extend({ id: z.string().min(1), function: toolInvocationSchema.extend({ name: z.string().min(1) }) });
+export const completionToolCallSchema = z.object({ id: z.string(), type: z.literal('function'), function: toolInvocationSchema }).strict();
+export const toolCallSchema = completionToolCallSchema.extend({ id: z.string().min(1), function: toolInvocationSchema.extend({ name: z.string().min(1) }) });
 export type ToolCall = z.infer<typeof toolCallSchema>;
 export const filePartSchema = z.object({
   type: z.literal('file'),

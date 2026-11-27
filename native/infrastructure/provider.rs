@@ -1121,6 +1121,24 @@ mod tests {
         assert!(openrouter_output(&serde_json::from_value(completion).unwrap()).is_err());
     }
     #[test]
+    fn openrouter_tool_calls_reject_unknown_fields_at_the_completion_boundary() {
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/router-wire-parity.json"))
+                .unwrap();
+        let upstream: OpenRouterCompletion = serde_json::from_value(json!({
+            "choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": [fixtures["openRouterToolCall"]]}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2}
+        }))
+        .unwrap();
+        let output = openrouter_output(&upstream).unwrap();
+        assert!(
+            serde_json::from_value::<Vec<crate::application::contracts::ToolCall>>(json!(
+                output.calls
+            ))
+            .is_err()
+        );
+    }
+    #[test]
     fn upstream_statuses_distinguish_request_rejections_from_provider_failures() {
         let cases = [
             (400, 400, "PROVIDER_REQUEST_REJECTED"),

@@ -1,5 +1,6 @@
 /** Exercise the actual authenticated HTTP boundary and cancellation ownership. */
 import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
@@ -10,6 +11,9 @@ import { uuid7 } from '../src/app/common/identity/identity.ts';
 import type { Connection, Continuation, InferenceRequest, InferenceResult, Message, Model, ProviderAdapter, Tool } from '../src/app/common/schemas/contracts.ts';
 import { CodexAuth, type CodexCredentials } from '../src/app/services/provider-service/providers/codex-auth.ts';
 import { CodexHttpAdapter, OpenRouterAdapter } from '../src/app/services/provider-service/providers/http-providers.ts';
+const parity: { toolArguments: { label: string; source: string; accepted: boolean }[]; responsesHistory: unknown[] } = JSON.parse(
+  readFileSync(new URL('./fixtures/router-wire-parity.json', import.meta.url), 'utf8'),
+);
 const directories: string[] = [];
 const listeners: ListeningRouter[] = [];
 const model: Model = { id: 'test-model', name: 'Synthetic model', reasoning_efforts: ['low', 'high'], default_reasoning_effort: 'low', context_window: 32000, max_output_tokens: 4000, tools: true, structured_output: true, input_modalities: ['text'] };
@@ -34,6 +38,64 @@ function syntheticCodex(fetcher: typeof fetch): CodexHttpAdapter {
   }, async (): Promise<never> => { throw new Error('Unexpected credential refresh.'); }));
 }
 describe('Provider Router API', (): void => {
+  it.each(parity.toolArguments)('validates $label before publishing tool calls for continuation', async ({ source, accepted }): Promise<void> => {
+    const call: Record<string, string> = { type: 'function_call', call_id: 'call-1', name: 'lookup', arguments: source };
+    const upstreamInputs: unknown[] = [];
+    const adapter: CodexHttpAdapter = syntheticCodex(async (_url, init): Promise<Response> => {
+      const payload: { input: unknown } = JSON.parse(String(init?.body));
+      upstreamInputs.push(payload.input);
+      const output: unknown[] = upstreamInputs.length === 1 ? [call] : [
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Answer' }] },
+      ];
+      return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output, usage: { input_tokens: 5, output_tokens: 2 } } })}\n\n`);
+    });
+    const { listener, token, connection } = await fixture(adapter.infer.bind(adapter));
+    const input: InferenceRequest = { ...request(connection), tools: [
+      { type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } },
+    ] };
+    const first: Response = await post(listener.endpoint, token, input);
+    if (!accepted) {
+      expect(first.status).toBe(502);
+      expect(await first.json()).toMatchObject({ error: { code: 'INVALID_TOOL_ARGUMENTS' } });
+      return;
+    }
+
+    expect(first.status).toBe(200);
+    const result: InferenceResult = await first.json();
+    expect(result.tool_calls).toMatchObject([{ function: { arguments: source } }]);
+    expect(result.continuation).toBeDefined();
+    const messages: Message[] = [
+      ...input.messages,
+      { role: 'assistant', content: result.content, tool_calls: result.tool_calls, continuation: result.continuation },
+      { role: 'tool', tool_call_id: call.call_id, content: '42' },
+    ];
+    const second: Response = await post(listener.endpoint, token, { ...input, request_id: uuid7(), messages });
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ content: 'Answer' });
+    expect(upstreamInputs[1]).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'Synthetic question' }] },
+      call,
+      { type: 'function_call_output', call_id: call.call_id, output: '42' },
+    ]);
+  });
+
+  it('preserves Responses text-part boundaries through the upstream request', async (): Promise<void> => {
+    const upstreamInputs: unknown[] = [];
+    const adapter: CodexHttpAdapter = syntheticCodex(async (_url, init): Promise<Response> => {
+      const payload: { input: unknown } = JSON.parse(String(init?.body));
+      upstreamInputs.push(payload.input);
+      return new Response('data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Answer"}]}],"usage":{"input_tokens":5,"output_tokens":2}}}\n\n');
+    });
+    const { listener, token } = await fixture(adapter.infer.bind(adapter));
+    const response: Response = await post(listener.endpoint, token, { model: model.id, input: parity.responsesHistory }, '/v1/responses');
+    expect(response.status).toBe(200);
+    expect(upstreamInputs).toEqual([[
+      { role: 'user', content: [{ type: 'input_text', text: 'First question.' }, { type: 'input_text', text: 'Second question.' }] },
+      { role: 'assistant', content: [{ type: 'output_text', text: 'First answer.' }, { type: 'output_text', text: 'Second answer.' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'Follow-up.' }] },
+    ]]);
+  });
+
   it.each(['codex_http', 'openrouter_http'] as const)('keeps opaque %s state numbers intact across a client round trip', async (method): Promise<void> => {
     const requests: string[] = [];
     const provider: ProviderAdapter = method === 'codex_http' ? syntheticCodex(async (_url, init): Promise<Response> => {

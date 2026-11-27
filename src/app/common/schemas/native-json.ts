@@ -1,7 +1,7 @@
 /** Decode the same JSON values as the native router's default serde_json parser. */
 import { isDeepStrictEqual } from 'node:util';
-import { rememberNumberSource } from '../../../common/schemas/json-wire.ts';
-import { MAX_U64 } from '../../../common/schemas/token-count.ts';
+import { rememberNumberSource } from './json-wire.ts';
+import { MAX_U64 } from './token-count.ts';
 
 type NativeValue = null | boolean | string | bigint | number | NativeValue[] | { [key: string]: NativeValue };
 const MIN_I64: bigint = -9_223_372_036_854_775_808n;
@@ -15,8 +15,8 @@ export function replayArgumentsEqual(expected: string, actual: string): boolean 
   }
 }
 
-/** Provider decoders consume ordinary JS values and can recover exact number tokens when needed. */
-export function parseNativeProviderJson(source: string): unknown {
+/** Decode for validation or transport with ordinary JS numbers and exact wire tokens. */
+export function parseNativeJson(source: string): unknown {
   return readNativeJson(source, true);
 }
 

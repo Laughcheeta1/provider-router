@@ -591,6 +591,13 @@ mod tests {
     use crate::domain::{Method, Model};
     use axum::body::to_bytes;
 
+    fn wire_parity_fixtures() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../tests/fixtures/router-wire-parity.json"
+        ))
+        .unwrap()
+    }
+
     fn connection() -> Connection {
         let mut connection = Connection::new(Method::Codex);
         connection.exposed = true;
@@ -606,6 +613,77 @@ mod tests {
             input_modalities: vec!["text".into()],
         });
         connection
+    }
+
+    #[test]
+    fn completion_checks_native_json_tool_arguments() {
+        let connection = connection();
+        let request_id = Uuid::now_v7();
+        let request = decode(
+            Surface::Responses,
+            json!({
+                "model": "test-model",
+                "input": "Synthetic question",
+                "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}]
+            }),
+            std::slice::from_ref(&connection),
+            request_id,
+        )
+        .unwrap();
+        let fixtures = wire_parity_fixtures();
+        let mut completion = Completion {
+            request_id,
+            content: String::new(),
+            tool_calls: vec![],
+            usage: Usage {
+                input_tokens: 5,
+                output_tokens: 2,
+                cached_input_tokens: None,
+                cache_write_tokens: None,
+            },
+            provider: "codex".into(),
+            method: "codex_http".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            continuation: None,
+        };
+        for fixture in fixtures["toolArguments"].as_array().unwrap() {
+            completion.tool_calls = vec![ToolCall::Function {
+                id: "call-1".into(),
+                function: Invocation {
+                    name: "lookup".into(),
+                    arguments: fixture["source"].as_str().unwrap().into(),
+                },
+            }];
+            let result = request.request.evaluate(&completion, &connection);
+            assert_eq!(result.is_ok(), fixture["accepted"], "{}", fixture["label"]);
+            if let Err(failure) = result {
+                assert_eq!(
+                    (failure.status, failure.code),
+                    (502, "INVALID_TOOL_ARGUMENTS")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn responses_keeps_each_text_part_in_history() {
+        let fixtures = wire_parity_fixtures();
+        let request = decode(
+            Surface::Responses,
+            json!({"model": "test-model", "input": fixtures["responsesHistory"]}),
+            &[connection()],
+            Uuid::now_v7(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(request.request.messages).unwrap(),
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "First question."}, {"type": "text", "text": "Second question."}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "First answer."}, {"type": "text", "text": "Second answer."}]},
+                {"role": "user", "content": "Follow-up."}
+            ])
+        );
     }
 
     #[tokio::test]

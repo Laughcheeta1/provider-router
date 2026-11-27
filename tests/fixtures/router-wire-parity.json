@@ -1,0 +1,17 @@
+{
+  "toolArguments": [
+    {"label":"out-of-range number","source":"{\"n\":1e309}","accepted":false},
+    {"label":"out-of-range number in an overwritten key","source":"{\"n\":1e999,\"n\":1}","accepted":false},
+    {"label":"unpaired Unicode surrogate","source":"{\"text\":\"\\uD800\"}","accepted":false},
+    {"label":"malformed JSON","source":"{\"n\":}","accepted":false},
+    {"label":"nesting above the native limit","source":"{\"nested\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}","accepted":false},
+    {"label":"nesting at the native limit","source":"{\"nested\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}","accepted":true},
+    {"label":"valid duplicate keys and Unicode","source":"{\"n\":1,\"n\":9007199254740993,\"text\":\"\\ud83d\\ude00\"}","accepted":true}
+  ],
+  "openRouterToolCall": {"type":"function","id":"call-1","function":{"name":"lookup","arguments":"{}"},"provider_metadata":{"signature":"synthetic"}},
+  "responsesHistory": [
+    {"role":"user","content":[{"type":"input_text","text":"First question."},{"type":"input_text","text":"Second question."}]},
+    {"role":"assistant","content":[{"type":"output_text","text":"First answer."},{"type":"output_text","text":"Second answer."}]},
+    {"role":"user","content":"Follow-up."}
+  ]
+}

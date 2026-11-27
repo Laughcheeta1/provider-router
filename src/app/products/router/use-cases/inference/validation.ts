@@ -1,6 +1,7 @@
 /** Validate provider answers and tools at the boundary, before returning them to any client. */
 import { Ajv } from 'ajv';
 import { filePartSchema, RouterError, type Continuation, type InferenceRequest, type InferenceResult, type Model, type Tool, type ToolCall } from '../../../../common/schemas/contracts.ts';
+import { parseNativeJson } from '../../../../common/schemas/native-json.ts';
 
 const ajv: Ajv = new Ajv({ strict: false, allErrors: false, validateFormats: false });
 /** Enforce advertised model choices, output limits and represented input modalities. */
@@ -51,8 +52,8 @@ export function validateResult(request: InferenceRequest, result: InferenceResul
     const tool: Tool | undefined = request.tools.find((item: Tool): boolean => item.function.name === call.function.name);
     if (!tool) throw new RouterError('INVALID_TOOL_CALLS', 'The provider requested an unavailable tool.', 502);
     let args: unknown;
-    try { args = JSON.parse(call.function.arguments) as unknown; }
-    catch { throw new RouterError('INVALID_TOOL_CALLS', 'The provider returned invalid tool arguments.', 502); }
+    try { args = parseNativeJson(call.function.arguments); }
+    catch { throw new RouterError('INVALID_TOOL_ARGUMENTS', 'The provider returned arguments outside the tool contract.', 502); }
     if (!ajv.validate(tool.function.parameters, args)) throw new RouterError('INVALID_TOOL_ARGUMENTS', 'The provider returned arguments outside the tool contract.', 502);
   }
   if (!result.tool_calls.length && request.response_format) {
