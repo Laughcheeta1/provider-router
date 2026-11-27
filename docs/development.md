@@ -38,12 +38,6 @@ cargo run --locked -- --data-dir "$profile" serve
 
 In another terminal, run `provider-router --data-dir DIRECTORY status` with the same directory. To shut down, run `provider-router --data-dir DIRECTORY stop` or press Ctrl+C in the foreground process. Remove the temporary profile once it has stopped.
 
-## Headless smoke server
-
-The TypeScript rehearsal server in `scripts/smoke-server.ts` requires an absolute, isolated `PROVIDER_ROUTER_DATA_DIR` and listens on loopback at `PROVIDER_ROUTER_PORT` (default `47831`). It writes the endpoint and client key to `ready.json` in that directory.
-
-By default, it approves `http://127.0.0.1` and `http://localhost` on ports `5173` (Backoffice), `5174` (Antikythera), `5176` (landing page), and `5384` (isolated Antikythera development). Set `PROVIDER_ROUTER_BROWSER_ORIGINS` to a comma-separated list of exact origins to replace those defaults, or set it to an empty string to disable browser access. API requests still require the rehearsal client key.
-
 ## Verify providers and attachments
 
 The automated tests use synthetic inputs and synthetic provider responses. The API tests exercise standard Chat Completions and Responses, request validation, local authentication, browser origins, documents, and streaming response formats. For an authorized live Codex run, use a dedicated Router profile, an existing Codex CLI login, one exposed model from the catalog, and a synthetic prompt.

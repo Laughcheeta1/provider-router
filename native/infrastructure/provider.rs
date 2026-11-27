@@ -1192,7 +1192,7 @@ mod tests {
         let tag = endpoint_tag(&endpoints, upstream.selected_provider().unwrap()).unwrap();
         let mut accepted = openrouter_output(&upstream).unwrap();
         accepted.state.as_mut().unwrap()["upstream"] = json!(tag);
-        assert_eq!(accepted.calls, [tool_call.clone()]);
+        assert_eq!(accepted.calls.as_slice(), std::slice::from_ref(&tool_call));
         assert_eq!((accepted.input_tokens, accepted.output_tokens), (14, 3));
         assert_eq!(
             (accepted.cache_read, accepted.cache_write),

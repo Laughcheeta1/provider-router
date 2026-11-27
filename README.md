@@ -11,4 +11,6 @@ Provider Router is an MIT-licensed native terminal application that exposes your
 
 Running `provider-router` opens the dashboard. Subcommands such as `provider-router status`, `provider-router providers list`, and `provider-router clients create` use the same settings and emit JSON for scripting. The Rust executable targets Windows, macOS, and Linux on x64 and ARM64.
 
+To run from source, install Rust 1.92 or newer and run `cargo run --locked` from this repository.
+
 See [Getting started](docs/getting-started.md), the [API contract](docs/api.md), and [development and verification](docs/development.md).
