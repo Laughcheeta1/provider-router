@@ -1,8 +1,9 @@
 //! Translate the supported OpenAI request shapes and produce standard SDK envelopes.
 
 use crate::application::contracts::{
-    Choice, Completion, Content, Format, Function, Invocation, Message, Part, Request, Role,
-    Schema, Tool, ToolCall, parse_choice,
+    Attachment, Choice, Completion, Content, Continuation, ContinuationState, Format, Function,
+    Invocation, Message, Part, Request, Role, Schema, Tool, ToolCall, is_compaction_item,
+    parse_choice,
 };
 use crate::application::failure::{Failure, Outcome};
 use crate::domain::Connection;
@@ -112,6 +113,7 @@ enum InputItem {
     Function(HistoryCall),
     Output(HistoryOutput),
     Message(HistoryMessage),
+    Native(Value),
 }
 
 #[derive(Deserialize)]
@@ -162,9 +164,44 @@ enum HistoryContent {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum HistoryPart {
-    InputText { text: String },
-    OutputText { text: String },
-    InputFile { filename: String, file_data: String },
+    InputText {
+        text: String,
+    },
+    OutputText {
+        text: String,
+    },
+    InputFile {
+        filename: Option<String>,
+        file_data: Option<String>,
+        file_id: Option<String>,
+    },
+}
+
+impl HistoryPart {
+    fn into_part(self) -> Outcome<Part> {
+        // Responses parts accept extension metadata while document sources are exclusive.
+        match self {
+            Self::InputText { text } | Self::OutputText { text } => Ok(Part::Text { text }),
+            Self::InputFile {
+                filename: Some(filename),
+                file_data: Some(file_data),
+                file_id: None,
+            } => Ok(Part::File {
+                file: Attachment::Inline {
+                    filename,
+                    file_data,
+                },
+            }),
+            Self::InputFile {
+                filename: None,
+                file_data: None,
+                file_id: Some(file_id),
+            } => Ok(Part::File {
+                file: Attachment::Reference { file_id },
+            }),
+            Self::InputFile { .. } => Err(Failure::invalid()),
+        }
+    }
 }
 
 pub(super) fn decode(
@@ -195,6 +232,7 @@ pub(super) fn decode(
                     tool_choice: input.tool_choice,
                     parallel_tool_calls: input.parallel_tool_calls,
                     session_id: None,
+                    compaction: None,
                 },
                 stream: input.stream,
                 usage: input
@@ -204,14 +242,16 @@ pub(super) fn decode(
             })
         }
         Surface::Responses => {
-            let input: Responses = serde_json::from_value(value).map_err(|_| Failure::invalid())?;
+            let mut input: Responses =
+                serde_json::from_value(value).map_err(|_| Failure::invalid())?;
             if input.store == Some(true) {
                 return Err(Failure::invalid());
             }
             let (connection_id, model) = select(&input.model, connections)?;
+            let compaction = remove_compaction_trigger(&mut input.input)?;
             let mut messages = match input.provider_router_messages {
                 Some(messages) => messages,
-                None => history(input.input)?,
+                None => history(input.input, connection_id, &model)?,
             };
             if let Some(instructions) = input.instructions {
                 messages.insert(0, Message::text(Role::System, instructions));
@@ -250,6 +290,7 @@ pub(super) fn decode(
                     tool_choice,
                     parallel_tool_calls: input.parallel_tool_calls,
                     session_id: input.session_id,
+                    compaction: compaction.then_some(true),
                 },
                 stream: input.stream,
                 usage: true,
@@ -299,7 +340,31 @@ fn active_tools(mut tools: Vec<Tool>, choice: &Option<Value>) -> Outcome<Vec<Too
     Ok(tools)
 }
 
-fn history(input: Input) -> Outcome<Vec<Message>> {
+fn remove_compaction_trigger(input: &mut Input) -> Outcome<bool> {
+    let Input::History(items) = input else {
+        return Ok(false);
+    };
+    let mut compact = false;
+    for (index, item) in items.iter().enumerate() {
+        let InputItem::Native(item) = item else {
+            continue;
+        };
+        if item["type"] == "compaction_trigger"
+            && index + 1 == items.len()
+            && item.as_object().is_some_and(|fields| fields.len() == 1)
+        {
+            compact = true;
+        } else if !is_compaction_item(item) {
+            return Err(Failure::invalid());
+        }
+    }
+    if compact {
+        items.pop();
+    }
+    Ok(compact)
+}
+
+fn history(input: Input, connection_id: Uuid, model: &str) -> Outcome<Vec<Message>> {
     match input {
         Input::Text(text) => Ok(vec![Message::text(Role::User, text)]),
         Input::History(items) => items
@@ -325,6 +390,16 @@ fn history(input: Input) -> Outcome<Vec<Message>> {
                     message.tool_call_id = Some(call_id);
                     Ok(message)
                 }
+                InputItem::Native(item) if is_compaction_item(&item) => {
+                    let mut message = Message::text(Role::Assistant, String::new());
+                    message.continuation = Some(Continuation {
+                        connection_id,
+                        model: model.to_owned(),
+                        state: ContinuationState::CodexResponses { items: vec![item] },
+                    });
+                    Ok(message)
+                }
+                InputItem::Native(_) => Err(Failure::invalid()),
                 InputItem::Message(input) => {
                     if matches!(input.role, Role::Tool)
                         || input.kind.is_some_and(|kind| kind != "message")
@@ -336,20 +411,8 @@ fn history(input: Input) -> Outcome<Vec<Message>> {
                         HistoryContent::Parts(parts) => Content::Parts(
                             parts
                                 .into_iter()
-                                .map(|part| match part {
-                                    HistoryPart::InputText { text }
-                                    | HistoryPart::OutputText { text } => Part::Text { text },
-                                    HistoryPart::InputFile {
-                                        filename,
-                                        file_data,
-                                    } => Part::File {
-                                        file: crate::application::contracts::Attachment {
-                                            filename,
-                                            file_data,
-                                        },
-                                    },
-                                })
-                                .collect(),
+                                .map(HistoryPart::into_part)
+                                .collect::<Outcome<_>>()?,
                         ),
                     };
                     Ok(Message {
@@ -455,7 +518,13 @@ pub(super) fn response(input: &OpenAi, completion: &Completion) -> Response {
             stream(body)
         }
         Surface::Responses => {
-            let mut output = Vec::new();
+            let mut output: Vec<Value> = completion
+                .continuation
+                .as_ref()
+                .and_then(|continuation| continuation.state.compaction_item())
+                .into_iter()
+                .cloned()
+                .collect();
             if !completion.content.is_empty() {
                 output.push(json!({"type":"message", "id":format!("msg_{}", Uuid::now_v7()), "role":"assistant", "status":"completed",
                     "content":[{"type":"output_text","text":completion.content,"annotations":[],"logprobs":[]}]}));
@@ -538,7 +607,7 @@ fn response_events(object: Value, items: &[Value]) -> String {
                 "response.content_part.done",
                 json!({"item_id":id,"output_index":index,"content_index":0,"part":part}),
             );
-        } else {
+        } else if item["type"] == "function_call" {
             pending["arguments"] = json!("");
             emit(
                 "response.output_item.added",
@@ -801,6 +870,62 @@ mod tests {
                 {"role": "user", "content": "Follow-up."}
             ])
         );
+    }
+
+    #[test]
+    fn responses_accept_stored_files_and_a_final_compaction_trigger() {
+        let mut connection = Connection::new(crate::domain::Method::Codex);
+        connection.exposed = true;
+        connection.models.push(crate::domain::Model {
+            id: "test-model".into(),
+            name: "Test model".into(),
+            reasoning_efforts: vec![],
+            default_reasoning_effort: None,
+            context_window: 128_000,
+            max_output_tokens: 4_000,
+            tools: false,
+            structured_output: false,
+            input_modalities: vec!["text".into()],
+        });
+        let file_id = format!("file-{}", Uuid::now_v7());
+        let request = json!({"model":"test-model", "input":[
+            {"type":"compaction","id":"cmp_previous","encrypted_content":"opaque"},
+            {"role":"user","content":[{"type":"input_file","file_id":file_id}]},
+            {"type":"compaction_trigger"}
+        ]});
+        let parsed = decode(
+            Surface::Responses,
+            request.clone(),
+            &[connection.clone()],
+            Uuid::now_v7(),
+        )
+        .unwrap();
+        let wire = serde_json::to_value(&parsed.request).unwrap();
+        assert_eq!(wire["compaction"], true);
+        assert_eq!(
+            wire["messages"][0]["continuation"]["state"]["items"][0],
+            request["input"][0]
+        );
+        assert_eq!(
+            wire["messages"][1]["content"][0]["file"],
+            json!({"file_id":file_id})
+        );
+        assert!(parsed.request.validate(&connection.models[0]).is_ok());
+
+        let mut ambiguous = request.clone();
+        ambiguous["input"][1]["content"][0]["filename"] = json!("note.txt");
+        ambiguous["input"][1]["content"][0]["file_data"] = json!("data:text/plain;base64,SGVsbG8h");
+        let rejected = decode(
+            Surface::Responses,
+            ambiguous,
+            std::slice::from_ref(&connection),
+            Uuid::now_v7(),
+        );
+        assert_eq!(rejected.err().unwrap().code, "INVALID_REQUEST");
+
+        let mut invalid = request;
+        invalid["input"].as_array_mut().unwrap().swap(1, 2);
+        assert!(decode(Surface::Responses, invalid, &[connection], Uuid::now_v7()).is_err());
     }
 
     #[tokio::test]

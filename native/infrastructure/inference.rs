@@ -1,11 +1,14 @@
 //! Wire the inference use case to the local profile, document worker, and providers.
 
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::{
     application::{
         contracts::{Completion, Message, Request},
         failure::{Failure, Outcome},
+        files::{FileObject, Upload},
         inference::{InferenceBackend, REQUEST_TIMEOUT},
     },
     domain::{Connection, Model, State},
@@ -13,6 +16,7 @@ use crate::{
 
 use super::{
     documents,
+    files::FileStore,
     profile::Profile,
     provider::{self, ProviderError},
 };
@@ -20,17 +24,23 @@ use super::{
 pub struct LocalInference {
     profile: Profile,
     http: reqwest::Client,
+    files: FileStore,
 }
 
 impl LocalInference {
-    pub fn new(profile: Profile) -> Self {
+    pub fn new(profile: Profile, shutdown: CancellationToken) -> Self {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .timeout(REQUEST_TIMEOUT)
             .build()
             .expect("HTTP client can be configured");
-        Self { profile, http }
+        let files = FileStore::new(&profile.dir, shutdown);
+        Self {
+            profile,
+            http,
+            files,
+        }
     }
 }
 
@@ -43,8 +53,31 @@ impl InferenceBackend for LocalInference {
         &self,
         messages: Vec<Message>,
         model: &Model,
+        file_owner: Option<Uuid>,
     ) -> Outcome<Vec<Message>> {
+        let files = self.files.clone();
+        let messages = tokio::task::spawn_blocking(move || files.resolve(file_owner, messages))
+            .await
+            .map_err(|_| Failure::document())??;
         documents::extract(messages, model).await
+    }
+
+    fn file_references_supported(&self) -> bool {
+        true
+    }
+
+    async fn upload_file(&self, owner: Uuid, upload: Upload) -> Outcome<FileObject> {
+        let files = self.files.clone();
+        tokio::task::spawn_blocking(move || files.upload(owner, upload))
+            .await
+            .map_err(|_| Failure::settings())?
+    }
+
+    async fn delete_file(&self, owner: Uuid, id: Uuid) -> Outcome<()> {
+        let files = self.files.clone();
+        tokio::task::spawn_blocking(move || files.delete(owner, id))
+            .await
+            .map_err(|_| Failure::settings())?
     }
 
     async fn complete(&self, connection: &Connection, request: &Request) -> Outcome<Completion> {

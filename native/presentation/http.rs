@@ -1,8 +1,10 @@
 //! Local HTTP transport, browser policy, and protocol adapters.
+mod files;
 mod openai;
 use crate::{
     application::{
         failure::{Failure, Outcome},
+        files::{MAX_UPLOAD_BODY_BYTES, file_key_required, file_uuid},
         inference::{self, InferenceBackend, InferenceService, exposed},
     },
     domain::State,
@@ -10,8 +12,8 @@ use crate::{
 use axum::{
     Json, Router,
     body::to_bytes,
-    extract::Request,
     extract::State as ExtractState,
+    extract::{DefaultBodyLimit, Request},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -24,6 +26,7 @@ const REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 pub fn router<B: InferenceBackend>(backend: B, shutdown: CancellationToken) -> Router {
     Router::new()
         .fallback(dispatch::<B>)
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES))
         .with_state(Arc::new(Api(InferenceService::new(backend, shutdown))))
 }
 struct Api<B>(InferenceService<B>);
@@ -138,6 +141,19 @@ impl<B: InferenceBackend> Api<B> {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "));
         let principal = inference::authenticate(state, token)?;
+        if request.method() == Method::POST && path == "/v1/files" {
+            if principal.file_owner().is_none() {
+                return Err(file_key_required());
+            }
+            let upload = files::upload(request, REQUEST_BODY_TIMEOUT).await?;
+            return Ok(Json(self.0.upload_file(principal, upload).await?).into_response());
+        }
+        if request.method() == Method::DELETE
+            && let Some(file_id) = path.strip_prefix("/v1/files/")
+        {
+            self.0.delete_file(principal, file_uuid(file_id)?).await?;
+            return Ok(Json(json!({"id":file_id,"object":"file","deleted":true})).into_response());
+        }
         if request.method() == Method::GET {
             return match path {
                 "/v1/connectivity" => {
@@ -147,6 +163,8 @@ impl<B: InferenceBackend> Api<B> {
                         .map(|connection| connection.models.len())
                         .sum();
                     info["ready"] = json!(models > 0);
+                    info["file_references"] = json!(self.0.can_reference_files(principal));
+                    info["compaction"] = json!(true);
                     info["providers"] = json!(connections);
                     info["models"] = json!(models);
                     Ok(Json(info).into_response())
@@ -275,7 +293,7 @@ fn preflight(headers: &HeaderMap) -> Outcome<Response> {
         .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
         .map(|value| value.to_str().unwrap_or("invalid"));
     if !headers.contains_key(header::ORIGIN)
-        || !matches!(method, Some("GET" | "POST"))
+        || !matches!(method, Some("GET" | "POST" | "DELETE"))
         || request_headers.is_some_and(|value| {
             value
                 .split(',')
@@ -297,7 +315,7 @@ fn preflight(headers: &HeaderMap) -> Outcome<Response> {
     Ok((
         StatusCode::NO_CONTENT,
         [
-            (header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST"),
+            (header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, DELETE"),
             (
                 header::ACCESS_CONTROL_ALLOW_HEADERS,
                 "Authorization, Content-Type, X-Request-ID",
@@ -343,6 +361,7 @@ mod tests {
             &self,
             messages: Vec<Message>,
             _: &Model,
+            _: Option<Uuid>,
         ) -> Outcome<Vec<Message>> {
             Ok(messages)
         }
@@ -361,6 +380,7 @@ mod tests {
             &self,
             messages: Vec<Message>,
             _: &Model,
+            _: Option<Uuid>,
         ) -> Outcome<Vec<Message>> {
             Ok(messages)
         }
@@ -450,6 +470,88 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn browser_file_uploads_are_owned_and_deletable() -> anyhow::Result<()> {
+        use crate::infrastructure::{inference::LocalInference, profile::Profile};
+
+        let temp = tempfile::tempdir()?;
+        let profile = Profile::open(Some(temp.path().join("profile")))?;
+        let (_, owner_key) = profile.create_client("File owner")?;
+        let (_, foreign_key) = profile.create_client("Other client")?;
+        profile.update(|state| {
+            state.network.browser_origins = vec!["https://client.example".into()];
+            Ok(())
+        })?;
+        let shutdown = CancellationToken::new();
+        let api = Arc::new(Api(InferenceService::new(
+            LocalInference::new(profile, shutdown.clone()),
+            shutdown.clone(),
+        )));
+        let upload = |key: &str| {
+            axum::http::Request::post("/v1/files")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::ORIGIN, "https://client.example")
+                .header(header::CONTENT_TYPE, "multipart/form-data; boundary=boundary")
+                .body(Body::from(concat!(
+                    "--boundary\r\ncontent-disposition: form-data; name=\"purpose\"\r\n\r\nuser_data\r\n",
+                    "--boundary\r\ncontent-disposition: form-data; name=\"file\"; filename=\"note.txt\"\r\n",
+                    "content-type: application/octet-stream\r\n\r\nHello\r\n--boundary--\r\n"
+                )))
+        };
+        let anonymous = dispatch(ExtractState(api.clone()), upload("local")?).await;
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+        let response = dispatch(ExtractState(api.clone()), upload(&owner_key)?).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "https://client.example"
+        );
+        let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
+        assert_eq!(body["object"], "file");
+        assert_eq!(body["filename"], "note.txt");
+        assert_eq!(body["purpose"], "user_data");
+        assert_eq!(body["bytes"], 5);
+        assert_eq!(
+            body["expires_at"].as_u64().unwrap() - body["created_at"].as_u64().unwrap(),
+            3600
+        );
+        let id = body["id"].as_str().unwrap();
+        let preflight = axum::http::Request::builder()
+            .method(Method::OPTIONS)
+            .uri(format!("/v1/files/{id}"))
+            .header(header::ORIGIN, "https://client.example")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "DELETE")
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+            .body(Body::empty())?;
+        let approved = dispatch(ExtractState(api.clone()), preflight).await;
+        assert_eq!(approved.status(), StatusCode::NO_CONTENT);
+        assert!(
+            approved.headers()[header::ACCESS_CONTROL_ALLOW_METHODS]
+                .to_str()?
+                .contains("DELETE")
+        );
+        let delete = |key: &str| {
+            axum::http::Request::delete(format!("/v1/files/{id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::ORIGIN, "https://client.example")
+                .body(Body::empty())
+        };
+        let foreign = dispatch(ExtractState(api.clone()), delete(&foreign_key)?).await;
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        let deleted = dispatch(ExtractState(api.clone()), delete(&owner_key)?).await;
+        assert_eq!(deleted.status(), StatusCode::OK);
+        let receipt: Value = serde_json::from_slice(&to_bytes(deleted.into_body(), 4096).await?)?;
+        assert_eq!(receipt, json!({"id":id,"object":"file","deleted":true}));
+        assert_eq!(
+            dispatch(ExtractState(api), delete(&owner_key)?)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        shutdown.cancel();
+        Ok(())
+    }
+
     #[tokio::test(start_paused = true)]
     async fn deadline_and_client_cancel_have_distinct_http_errors() -> anyhow::Result<()> {
         let mut connection = Connection::new(ProviderMethod::Codex);
@@ -498,6 +600,8 @@ mod tests {
                 .await
             });
         assert_eq!(accepted?.status(), StatusCode::OK);
+        let replay = dispatch(ExtractState(api.clone()), infer(id)?).await;
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
         let timed_out = dispatch(ExtractState(api), infer(Uuid::now_v7())?).await;
         for (response, status, code) in [
             (cancelled, 499, "CANCELLED"),

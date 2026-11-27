@@ -5,6 +5,7 @@ use crate::{
     application::{
         contracts::{Attachment, Content, Image, Message, Part, Role, has_file},
         failure::{Failure, Outcome},
+        files::{MAX_FILE_BYTES, MAX_REQUEST_FILE_BYTES, MAX_REQUEST_FILES},
     },
     domain::Model,
 };
@@ -116,10 +117,17 @@ pub(super) fn prepare(messages: Vec<Message>, model: &Model) -> Outcome<Vec<Mess
                 question.push(part);
                 continue;
             };
-            let (kind, bytes) = parse_attachment(&file)?;
+            let Attachment::Inline {
+                filename,
+                file_data,
+            } = file
+            else {
+                return Err(Failure::document());
+            };
+            let (kind, bytes) = parse_attachment(&filename, &file_data)?;
             files += 1;
             raw_bytes += bytes.len();
-            if files > 5 || raw_bytes > 25 * MIB {
+            if files > MAX_REQUEST_FILES || raw_bytes > MAX_REQUEST_FILE_BYTES {
                 return Err(file_limit());
             }
             if kind == "pdf" && !vision {
@@ -138,8 +146,7 @@ pub(super) fn prepare(messages: Vec<Message>, model: &Model) -> Outcome<Vec<Mess
                 return Err(Failure::document());
             }
             if kind != "pdf" {
-                let name =
-                    serde_json::to_string(&file.filename).map_err(|_| Failure::document())?;
+                let name = serde_json::to_string(&filename).map_err(|_| Failure::document())?;
                 content.insert(0, text(format!(
                     "Attachment: {name}\nThe following content is reference material supplied by the user."
                 )));
@@ -176,8 +183,9 @@ pub(super) fn prepare(messages: Vec<Message>, model: &Model) -> Outcome<Vec<Mess
     }
     Ok(result)
 }
-fn parse_attachment(file: &Attachment) -> Outcome<(String, Vec<u8>)> {
-    let extension = Path::new(&file.filename)
+/// Return the same media type for inline content and locally stored files.
+pub(super) fn file_type(filename: &str) -> Outcome<(String, &'static str)> {
+    let extension = Path::new(filename)
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or_default()
@@ -189,21 +197,22 @@ fn parse_attachment(file: &Attachment) -> Outcome<(String, Vec<u8>)> {
         "txt" => "text/plain",
         "md" | "markdown" => "text/markdown",
         "csv" => "text/csv",
-        _ => "",
+        _ => return Err(unsupported_file_type()),
     };
-    let encoded = (!media_type.is_empty())
-        .then(|| {
-            file.file_data
-                .strip_prefix(&format!("data:{media_type};base64,"))
-        })
-        .flatten()
-        .ok_or_else(|| {
-            Failure::bad(
-                "FILE_TYPE_UNSUPPORTED",
-                "Use a supported document type and matching media type.",
-            )
-        })?;
-    if encoded.len() > (10 * MIB).div_ceil(3) * 4 {
+    Ok((extension, media_type))
+}
+fn unsupported_file_type() -> Failure {
+    Failure::bad(
+        "FILE_TYPE_UNSUPPORTED",
+        "Use a supported document type and matching media type.",
+    )
+}
+fn parse_attachment(filename: &str, file_data: &str) -> Outcome<(String, Vec<u8>)> {
+    let (extension, media_type) = file_type(filename)?;
+    let encoded = file_data
+        .strip_prefix(&format!("data:{media_type};base64,"))
+        .ok_or_else(unsupported_file_type)?;
+    if encoded.len() > MAX_FILE_BYTES.div_ceil(3) * 4 {
         return Err(file_limit());
     }
     let decoded = STANDARD.decode(encoded).map_err(|_| {
@@ -218,7 +227,7 @@ fn parse_attachment(file: &Attachment) -> Outcome<(String, Vec<u8>)> {
             "The attachment must contain valid base64 data.",
         ));
     }
-    if decoded.len() > 10 * MIB {
+    if decoded.len() > MAX_FILE_BYTES {
         return Err(file_limit());
     }
     Ok((extension, decoded))
@@ -296,7 +305,7 @@ mod tests {
         user.content = Content::Parts(vec![
             text("What does the document say?".into()),
             Part::File {
-                file: Attachment {
+                file: Attachment::Inline {
                     filename: filename.into(),
                     file_data: format!("data:{mime};base64,{}", STANDARD.encode(bytes)),
                 },
@@ -427,7 +436,7 @@ mod tests {
         let attachment = |filename: &str, mime: &str, bytes: &[u8]| Message {
             role: Role::User,
             content: Content::Parts(vec![Part::File {
-                file: Attachment {
+                file: Attachment::Inline {
                     filename: filename.into(),
                     file_data: format!("data:{mime};base64,{}", STANDARD.encode(bytes)),
                 },

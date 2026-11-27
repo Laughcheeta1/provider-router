@@ -2,5 +2,6 @@
 
 pub mod contracts;
 pub mod failure;
+pub mod files;
 pub mod inference;
 pub mod management;

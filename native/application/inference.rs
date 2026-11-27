@@ -2,8 +2,9 @@
 use super::{
     contracts::{self, Completion, Message, Request as Inference},
     failure::{Failure, Outcome},
+    files::{FILE_NOT_FOUND, FileObject, Upload, file_key_required},
 };
-use crate::domain::{Connection, Model, State};
+use crate::domain::{Connection, Method, Model, State};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -23,7 +24,17 @@ pub trait InferenceBackend: Send + Sync + 'static {
         &self,
         messages: Vec<Message>,
         model: &Model,
+        file_owner: Option<Uuid>,
     ) -> impl Future<Output = Outcome<Vec<Message>>> + Send;
+    fn file_references_supported(&self) -> bool {
+        false
+    }
+    fn upload_file(&self, _: Uuid, _: Upload) -> impl Future<Output = Outcome<FileObject>> + Send {
+        async { Err(Failure::not_found()) }
+    }
+    fn delete_file(&self, _: Uuid, _: Uuid) -> impl Future<Output = Outcome<()>> + Send {
+        async { Err(Failure::not_found()) }
+    }
     fn complete(
         &self,
         connection: &Connection,
@@ -47,6 +58,23 @@ impl<B: InferenceBackend> InferenceService<B> {
     }
     pub fn snapshot(&self) -> Outcome<State> {
         self.backend.settings().map_err(|_| Failure::settings())
+    }
+    pub fn can_reference_files(&self, principal: Principal) -> bool {
+        principal.file_owner().is_some() && self.backend.file_references_supported()
+    }
+    pub async fn upload_file(&self, principal: Principal, file: Upload) -> Outcome<FileObject> {
+        let owner = principal.file_owner().ok_or_else(file_key_required)?;
+        let uploaded = self.backend.upload_file(owner, file).await?;
+        if !self.still_authorized(principal) {
+            let id = super::files::file_uuid(&uploaded.id)?;
+            let _ = self.backend.delete_file(owner, id).await;
+            return Err(file_key_required());
+        }
+        Ok(uploaded)
+    }
+    pub async fn delete_file(&self, principal: Principal, id: Uuid) -> Outcome<()> {
+        let owner = principal.file_owner().ok_or_else(file_key_required)?;
+        self.backend.delete_file(owner, id).await
     }
     pub fn cancel(&self, id: Uuid, principal: Principal) -> Outcome<()> {
         let registry = self.registry.lock().map_err(|_| Failure::settings())?;
@@ -93,6 +121,7 @@ impl<B: InferenceBackend> InferenceService<B> {
             registry: self.registry.clone(),
             id,
             cancel,
+            retryable: false,
         })
     }
     pub async fn infer(
@@ -124,6 +153,12 @@ impl<B: InferenceBackend> InferenceService<B> {
                     "The selected model is not exposed by this connection.",
                 )
             })?;
+        if request.compaction == Some(true) && (check || connection.method != Method::Codex) {
+            return Err(Failure::bad(
+                "COMPACTION_UNSUPPORTED",
+                "Explicit compaction requires a Codex subscription connection.",
+            ));
+        }
         request.validate(model)?;
         if request.reasoning_effort.is_none() {
             request.reasoning_effort = model
@@ -131,7 +166,8 @@ impl<B: InferenceBackend> InferenceService<B> {
                 .clone()
                 .or_else(|| model.reasoning_efforts.first().cloned());
         }
-        let lease = self.begin(request.request_id, principal.owner)?;
+        let mut lease = self.begin(request.request_id, principal.owner)?;
+        let mut dispatched = false;
         let actual = async {
             if request.messages.iter().any(contracts::has_file) {
                 let _permit = self
@@ -148,7 +184,8 @@ impl<B: InferenceBackend> InferenceService<B> {
                 let messages = std::mem::take(&mut request.messages);
                 request.messages = tokio::time::timeout(
                     Duration::from_secs(30),
-                    self.backend.prepare_documents(messages, model),
+                    self.backend
+                        .prepare_documents(messages, model, principal.file_owner()),
                 )
                 .await
                 .map_err(|_| Failure::document())??;
@@ -171,6 +208,7 @@ impl<B: InferenceBackend> InferenceService<B> {
                     continuation: None,
                 });
             }
+            dispatched = true;
             let result = self.backend.complete(connection, &request).await?;
             request.evaluate(&result, connection)?;
             Ok(result)
@@ -180,6 +218,11 @@ impl<B: InferenceBackend> InferenceService<B> {
             _ = self.revoked(principal) => Err(Failure::cancelled()),
             result = tokio::time::timeout(REQUEST_TIMEOUT, actual) => result.unwrap_or_else(|_| Err(Failure::router_timeout())),
         };
+        // A corrected file reference may reuse this ID because no model call was attempted.
+        lease.retryable = !dispatched
+            && result
+                .as_ref()
+                .is_err_and(|error| error.code == FILE_NOT_FOUND);
         if result.is_ok() && !self.still_authorized(principal) {
             return Err(Failure::new(
                 401,
@@ -238,26 +281,34 @@ struct Lease {
     registry: Arc<Mutex<Registry>>,
     id: Uuid,
     cancel: CancellationToken,
+    retryable: bool,
 }
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.cancel.cancel();
         if let Ok(mut registry) = self.registry.lock() {
             registry.active.remove(&self.id);
-            registry.recent.insert(self.id);
-            registry.order.push_back(self.id);
-            if registry.order.len() > 4096
-                && let Some(oldest) = registry.order.pop_front()
-            {
-                registry.recent.remove(&oldest);
+            if !self.retryable || self.cancel.is_cancelled() {
+                registry.recent.insert(self.id);
+                registry.order.push_back(self.id);
+                if registry.order.len() > 4096
+                    && let Some(oldest) = registry.order.pop_front()
+                {
+                    registry.recent.remove(&oldest);
+                }
             }
         }
+        self.cancel.cancel();
     }
 }
 #[derive(Clone, Copy)]
 pub struct Principal {
     owner: Uuid,
     token_hash: Option<[u8; 32]>,
+}
+impl Principal {
+    pub fn file_owner(self) -> Option<Uuid> {
+        self.token_hash.map(|_| self.owner)
+    }
 }
 pub fn authenticate(state: &State, token: Option<&str>) -> Outcome<Principal> {
     if let Some(token) = token.filter(|value| {

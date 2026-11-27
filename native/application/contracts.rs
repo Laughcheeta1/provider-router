@@ -26,6 +26,8 @@ pub struct Request {
     pub parallel_tool_calls: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<bool>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -70,6 +72,26 @@ pub enum ContinuationState {
         resolved_model: String,
     },
 }
+impl ContinuationState {
+    /// Return the opaque item only when the continuation is a compaction checkpoint.
+    pub fn compaction_item(&self) -> Option<&Value> {
+        let Self::CodexResponses { items } = self else {
+            return None;
+        };
+        let [item] = items.as_slice() else {
+            return None;
+        };
+        is_compaction_item(item).then_some(item)
+    }
+}
+
+pub fn is_compaction_item(item: &Value) -> bool {
+    item["type"] == "compaction"
+        && item["encrypted_content"]
+            .as_str()
+            .is_some_and(|content| !content.is_empty())
+}
+
 impl Message {
     pub fn text(role: Role, text: String) -> Self {
         Self {
@@ -97,10 +119,10 @@ pub enum Part {
     ImageUrl { image_url: Image },
 }
 #[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Attachment {
-    pub filename: String,
-    pub file_data: String,
+#[serde(untagged, deny_unknown_fields)]
+pub enum Attachment {
+    Inline { filename: String, file_data: String },
+    Reference { file_id: String },
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -238,11 +260,21 @@ impl Request {
                 for part in parts {
                     match part {
                         Part::Text { .. } => (),
-                        Part::File { file }
-                            if matches!(message.role, Role::User)
-                                && !file.filename.is_empty()
-                                && file.filename.chars().count() <= 255
-                                && !file.file_data.is_empty() => {}
+                        Part::File {
+                            file:
+                                Attachment::Inline {
+                                    filename,
+                                    file_data,
+                                },
+                        } if matches!(message.role, Role::User)
+                            && !filename.is_empty()
+                            && filename.chars().count() <= 255
+                            && !file_data.is_empty() => {}
+                        Part::File {
+                            file: Attachment::Reference { file_id },
+                        } if matches!(message.role, Role::User) => {
+                            super::files::file_uuid(file_id)?;
+                        }
                         _ => {
                             return Err(Failure::bad(
                                 "MEDIA_UNSUPPORTED",
@@ -328,6 +360,26 @@ impl Request {
             return Err(Failure::provider(
                 "OUTPUT_LIMIT",
                 "The provider exceeded the requested output budget.",
+            ));
+        }
+        if self.compaction == Some(true) {
+            if completion.content.is_empty()
+                && completion.tool_calls.is_empty()
+                && completion
+                    .continuation
+                    .as_ref()
+                    .is_some_and(|continuation| {
+                        continuation.connection_id == self.connection_id
+                            && continuation.model == self.model
+                            && continuation.state.compaction_item().is_some()
+                    })
+            {
+                return Ok(());
+            }
+
+            return Err(Failure::provider(
+                "INVALID_COMPACTION",
+                "The provider did not return a valid compaction checkpoint.",
             ));
         }
         if completion.content.trim().is_empty() && completion.tool_calls.is_empty() {

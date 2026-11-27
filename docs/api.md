@@ -2,7 +2,7 @@
 
 The public inference API implements a documented subset of the OpenAI API. Set an OpenAI SDK's `baseURL` to `http://127.0.0.1:47831/v1` and its `apiKey` to the client key when authentication is enabled. New installations do not require keys; SDKs that require a nonempty key can use `local` as a placeholder while key requirements are disabled. Native application accounts and provider credentials are not API inputs. The API listens on loopback by default. Linux hosts can enable an additional [Docker bridge listener](getting-started.md#connect-docker-containers-on-the-same-linux-server) on the same port.
 
-Local access defaults to no authentication. When **Require client API keys** is enabled, every endpoint except `/health` requires `Authorization: Bearer CLIENT_KEY`. Browser access is disabled by default. In API access, approve each exact HTTPS website origin (for example `https://app.example`) under Approved website origins; loopback HTTP origins are supported for development. Origins cannot contain paths, trailing slashes or wildcards. Approved origins receive CORS headers on successes and errors, and OPTIONS accepts GET/POST with authorization, content-type and x-request-id headers. Requests from other origins are rejected before authentication or inference. Local Host headers remain checked against the listener to prevent DNS rebinding. Browser access does not expose settings, provider credentials or account-management operations.
+Local access defaults to no authentication. When **Require client API keys** is enabled, every endpoint except `/health` requires `Authorization: Bearer CLIENT_KEY`. Browser access is disabled by default. In API access, approve each exact HTTPS website origin (for example `https://app.example`) under Approved website origins; loopback HTTP origins are supported for development. Origins cannot contain paths, trailing slashes or wildcards. Approved origins receive CORS headers on successes and errors, and OPTIONS accepts GET, POST and DELETE with authorization, content-type and x-request-id headers. Requests from other origins are rejected before authentication or inference. Local Host headers remain checked against the listener to prevent DNS rebinding. Browser access does not expose settings, provider credentials or account-management operations.
 
 On Linux, `container_bridge_host` must be an RFC 1918 IPv4 or unique-local IPv6 address assigned to the Linux bridge device `docker0` or a Docker-named bridge `br-<12-hex network ID>`. The bridge listener accepts connections only from addresses inside a local Docker bridge network, so hosts that merely route to the bridge address, for example over a VPN, are refused. Setting it also admits the configured bridge IP and `host.docker.internal` as Host authorities with the configured port, for example `172.17.0.1:47831` and `host.docker.internal:47831`. Use brackets around an IPv6 address in URLs and Host headers. Both listeners use the same client-key policy and exact browser origin rules.
 
@@ -16,7 +16,7 @@ This public identity probe returns installation identity, protocol compatibility
 
 ## GET /v1/connectivity
 
-A lightweight connection check uses the same client-key policy as inference, with no provider request or subscription usage. It returns Router identity, authentication policy, counts of exposed providers/models, and `ready` indicating whether at least one model is exposed. It does not verify upstream account validity; provider errors can still occur during inference.
+A lightweight connection check uses the same client-key policy as inference, with no provider request or subscription usage. It returns Router identity, authentication policy, counts of exposed providers/models, and `ready` indicating whether at least one model is exposed. It does not verify upstream account validity; provider errors can still occur during inference. Router advertises `compaction: true` and sets `file_references: true` when the request uses a registered client key.
 
 ```json
 {"name":"provider-router","protocol_version":1,"instance_id":"019a1111-1111-7111-8111-111111111111","version":"0.1.0","authentication_required":false,"ready":true,"providers":1,"models":2}
@@ -38,7 +38,7 @@ An unqualified upstream model ID is accepted only when exactly one exposed conne
 
 ## POST /v1/chat/completions
 
-Supported request fields are `model`, `messages`, `tools`, `tool_choice`, `parallel_tool_calls`, `response_format`, `reasoning_effort`, `max_tokens` or `max_completion_tokens`, `stream`, and `stream_options.include_usage`. Messages retain system/developer/user/assistant/tool roles, assistant `tool_calls`, and `tool_call_id` associations. Content accepts text strings and text blocks. User messages also accept inline `file` blocks. Function tools use normal OpenAI JSON schemas. Structured output uses `response_format.type = "json_schema"`.
+Supported request fields are `model`, `messages`, `tools`, `tool_choice`, `parallel_tool_calls`, `response_format`, `reasoning_effort`, `max_tokens` or `max_completion_tokens`, `stream`, and `stream_options.include_usage`. Messages retain system/developer/user/assistant/tool roles, assistant `tool_calls`, and `tool_call_id` associations. Content accepts text strings and text blocks. User messages also accept inline `file` blocks and stored files as `{"type":"file","file":{"file_id":"file-…"}}`. Function tools use normal OpenAI JSON schemas. Structured output uses `response_format.type = "json_schema"`.
 
 ```json
 {
@@ -59,7 +59,7 @@ With `stream: true`, the service returns `chat.completion.chunk` SSE frames, a f
 
 ## POST /v1/responses
 
-Supported request fields are `model`, `instructions`, `input`, `tools`, `tool_choice`, `parallel_tool_calls`, `text.format`, `reasoning.effort`, `max_output_tokens`, `stream` and `store: false`. Input accepts a string, role-bearing messages, `function_call` items and their matching `function_call_output` items. User messages accept inline `input_file` blocks. Tools use Responses' flat function shape. `text.format.type = "json_schema"` requests structured output.
+Supported request fields are `model`, `instructions`, `input`, `tools`, `tool_choice`, `parallel_tool_calls`, `text.format`, `reasoning.effort`, `max_output_tokens`, `stream` and `store: false`. Input accepts a string, role-bearing messages, `function_call` items and their matching `function_call_output` items. User messages accept inline `input_file` blocks and stored files as `{"type":"input_file","file_id":"file-…"}`. Tools use Responses' flat function shape. `text.format.type = "json_schema"` requests structured output.
 
 ```json
 {
@@ -75,7 +75,19 @@ Supported request fields are `model`, `instructions`, `input`, `tools`, `tool_ch
 }
 ```
 
-Completed responses use `object: "response"`, `status: "completed"`, standard message/function output items and Responses usage fields. SSE emits standard response, output-item, content-part, text/function-argument and completion events. Send authoritative history on every request. Response retrieval, stored conversation IDs, background Responses, provider-native encrypted reasoning state, standalone image and audio inputs, and unsupported request fields produce a standard OpenAI error object.
+Completed responses use `object: "response"`, `status: "completed"`, standard message/function output items and Responses usage fields. SSE emits standard response, output-item, content-part, text/function-argument and completion events. Send authoritative history on every request. Response retrieval, stored conversation IDs, background Responses, standalone image and audio inputs, and unsupported request fields produce a standard OpenAI error object. The continuation extension below supports provider-native encrypted reasoning state.
+
+## POST /v1/files
+
+Upload a supported document using OpenAI Files multipart form data. Supply `file` with its filename and `purpose=user_data`. Requests require a registered Router client key. The response is the OpenAI `file` object with an opaque `id`, `bytes`, `created_at`, `filename`, `purpose`, `expires_at` and `status`. Files expire after one hour by default. To set another expiration, send `expires_after[anchor]=created_at` and `expires_after[seconds]` between 3,600 and 2,592,000.
+
+Router retains the bytes locally and only submits its existing text and image document representation to the provider. References remain valid across Router restarts until expiry or deletion. The upload size limit is 10 MiB. Only the uploading Router client key can reference or delete its stored files. Clients without keys can continue to send inline documents.
+
+## DELETE /v1/files/{file_id}
+
+Delete an owned file and return `{"id":"file-…","object":"file","deleted":true}`. Expired, absent and foreign files all return `FILE_NOT_FOUND`. Router periodically removes expired uploads from its local profile.
+
+If a model request returns `FILE_NOT_FOUND` before the provider call, replace the stale file ID and retry using the same request ID. Successful and cancelled requests continue to require a fresh request ID for later calls.
 
 ## POST /v1/attachment-checks
 
@@ -93,7 +105,7 @@ Send a Chat Completions request body with the intended model and attachments to 
 
 ## Attachment formats and limits
 
-Send a filename and a base64 data URL with the media type for its extension. Supported extensions are `.pdf`, `.docx`, `.txt`, `.md`, `.markdown`, `.csv` and `.xlsx`. Remote URLs and uploaded file IDs are unsupported. Router processes attachments locally for both Codex and OpenRouter. It gives the model one user message per file, immediately before the user message that included the files. For formats other than PDF, the attachment message includes the filename alongside the extracted content.
+For inline content, send a filename and a base64 data URL with the media type for its extension. Supported extensions are `.pdf`, `.docx`, `.txt`, `.md`, `.markdown`, `.csv` and `.xlsx`. Remote URLs are unsupported. Referenced files and inline files count toward the same request limits. Router processes attachments locally for both Codex and OpenRouter. It gives the model one user message per file, immediately before the user message that included the files. For formats other than PDF, the attachment message includes the filename alongside the extracted content.
 
 - PDFs supply only a JPEG image of each page, in page order. The images let a vision model read the page and see tables, charts and layout.
 - DOCX supplies text, tables and supported embedded images. Text and Markdown supply their original UTF-8 text.
@@ -149,3 +161,9 @@ The versioned extension `POST /v1/inference` accepts an explicit UUIDv7 request 
 The native response can include `continuation` with its `connection_id`, selected `model` and provider-owned `state`. Add that complete object to the corresponding assistant message on the next request, followed by any matching tool results. Codex state contains the ordered Responses items. OpenRouter state contains its assistant message and resolved upstream route. An optional UUIDv7 `session_id` groups related requests for the provider's cache routing. Usage includes `cached_input_tokens` and `cache_write_tokens` when the provider reports them as unsigned 64-bit JSON integers.
 
 Non-streaming `POST /v1/responses` also returns the continuation under `provider_router.continuation`. An application using this extension can send the complete normalized history as `provider_router_messages` alongside its stateless Responses input.
+
+## Codex Responses compaction
+
+On a Codex subscription connection, append `{"type":"compaction_trigger"}` as the final `input` item of a stateless `POST /v1/responses` request. The completed response returns the opaque `compaction` item in `output`. Replay that item with later input as the replacement context.
+
+With `POST /v1/inference` the equivalent request sets `compaction: true`. A successful completion has empty `content` and `tool_calls` and carries the opaque item in its Codex `continuation`. Replay it as an assistant message with empty content and that continuation on the same connection and model. Other routes return `COMPACTION_UNSUPPORTED`.

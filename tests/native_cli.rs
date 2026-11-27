@@ -291,6 +291,55 @@ async fn applies_shared_client_and_network_settings_to_the_running_api() -> Resu
         "Attachments fit the request."
     );
     assert_eq!(check["usage"]["total_tokens"], 0);
+
+    let upload = || {
+        client
+            .post(format!("{endpoint}/v1/files"))
+            .bearer_auth(token)
+            .header("Content-Type", "multipart/form-data; boundary=router-test")
+            .body(concat!(
+                "--router-test\r\ncontent-disposition: form-data; name=\"purpose\"\r\n\r\nuser_data\r\n",
+                "--router-test\r\ncontent-disposition: form-data; name=\"file\"; filename=\"note.txt\"\r\n",
+                "content-type: text/plain\r\n\r\nHello\r\n--router-test--\r\n"
+            ))
+    };
+    let stale: Value = upload().send().await?.error_for_status()?.json().await?;
+    let stale_id = stale["id"].as_str().unwrap();
+    client
+        .delete(format!("{endpoint}/v1/files/{stale_id}"))
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?;
+    let request_id = uuid::Uuid::now_v7().to_string();
+    let check_reference = |file_id: &str| {
+        client
+            .post(format!("{endpoint}/v1/attachment-checks"))
+            .bearer_auth(token)
+            .header("X-Request-ID", &request_id)
+            .json(&serde_json::json!({
+                "model":format!("{}/synthetic", provider["id"].as_str().unwrap()),
+                "messages":[{"role":"user","content":[{"type":"file","file":{"file_id":file_id}}]}]
+            }))
+    };
+    let missing = check_reference(stale_id).send().await?;
+    assert_eq!(missing.status(), 404);
+    assert_eq!(
+        missing.json::<Value>().await?["error"]["code"],
+        "FILE_NOT_FOUND"
+    );
+    let replacement: Value = upload().send().await?.error_for_status()?.json().await?;
+    let replacement_id = replacement["id"].as_str().unwrap();
+    assert_ne!(replacement_id, stale_id);
+    let retried = check_reference(replacement_id).send().await?;
+    assert_eq!(retried.status(), 200);
+    let duplicate = check_reference(replacement_id).send().await?;
+    assert_eq!(duplicate.status(), 409);
+    assert_eq!(
+        duplicate.json::<Value>().await?["error"]["code"],
+        "REQUEST_REPLAYED"
+    );
+
     let clients = cli(&profile, &["clients", "list"])?;
     assert_eq!(clients[0]["name"], "SDK client");
     assert!(clients[0].get("token_hash").is_none());

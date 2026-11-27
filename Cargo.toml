@@ -20,7 +20,7 @@ manual-installers = []
 aes-gcm = "0.10"
 anyhow = "1"
 async-stream = "0.3"
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.22"
 calamine = "0.36"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }

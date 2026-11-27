@@ -63,7 +63,7 @@ async fn application() -> Result<()> {
     match cli.command {
         Some(commands::Command::InternalWorker) => {
             supervisor::serve_worker(|shutdown| {
-                http::router(LocalInference::new(profile), shutdown)
+                http::router(LocalInference::new(profile, shutdown.clone()), shutdown)
             })
             .await
         }

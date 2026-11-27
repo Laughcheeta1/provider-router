@@ -121,7 +121,10 @@ pub async fn infer(
         Method::Codex => {
             let payload = codex_payload(request)?;
             let response = codex_request(client, connection, "/responses", Some(&payload)).await?;
-            codex_output(completed_response(response).await?)?
+            codex_output(
+                completed_response(response).await?,
+                request["compaction"] == true,
+            )?
         }
     };
     let mut result = json!({
@@ -365,6 +368,10 @@ fn codex_payload(request: &Value) -> Result<Value> {
             let mut calls = message["tool_calls"].as_array().into_iter().flatten();
             for item in items {
                 match item["type"].as_str() {
+                    Some("compaction")
+                        if items.len() == 1
+                            && text_content(&message["content"]).is_empty()
+                            && crate::application::contracts::is_compaction_item(item) => {}
                     Some("reasoning") if item["encrypted_content"].as_str().is_some() => {}
                     Some("reasoning") => continue,
                     Some("message") if item["role"] == "assistant" => {}
@@ -427,6 +434,10 @@ fn codex_payload(request: &Value) -> Result<Value> {
             }));
         }
     }
+    let compact = request["compaction"] == true;
+    if compact {
+        input.push(json!({"type": "compaction_trigger"}));
+    }
     let tools: Vec<Value> = request["tools"]
         .as_array()
         .into_iter()
@@ -448,7 +459,7 @@ fn codex_payload(request: &Value) -> Result<Value> {
     if let Some(effort) = request.get("reasoning_effort") {
         payload["reasoning"] = json!({"effort": effort, "summary": "auto"});
     }
-    if let Some(choice) = request.get("tool_choice") {
+    if !compact && let Some(choice) = request.get("tool_choice") {
         payload["tool_choice"] = if choice.is_object() {
             json!({"type": "function", "name": choice["function"]["name"]})
         } else {
@@ -459,7 +470,7 @@ fn codex_payload(request: &Value) -> Result<Value> {
         payload["parallel_tool_calls"] = parallel.clone();
     }
     // Codex controls the subscription output budget. The API validates the completed usage.
-    if let Some(format) = request["response_format"]["json_schema"].as_object() {
+    if !compact && let Some(format) = request["response_format"]["json_schema"].as_object() {
         let mut format = format.clone();
         format.insert("type".into(), json!("json_schema"));
         payload["text"] = json!({"format": format});
@@ -709,12 +720,28 @@ impl CodexSse {
         Ok(None)
     }
 }
-fn codex_output(response: Value) -> Result<Completion> {
+fn invalid_compaction() -> anyhow::Error {
+    failure(
+        502,
+        "INVALID_COMPACTION",
+        "The subscription did not return a valid compaction checkpoint.",
+    )
+}
+fn codex_output(response: Value, compact: bool) -> Result<Completion> {
     ensure!(response["status"] == "completed", incomplete());
     let mut calls = Vec::new();
     let mut content = String::new();
+    let mut checkpoint = None;
     for item in response["output"].as_array().ok_or_else(invalid_response)? {
         match item["type"].as_str() {
+            Some("compaction") if compact => {
+                ensure!(
+                    checkpoint.is_none() && crate::application::contracts::is_compaction_item(item),
+                    invalid_compaction()
+                );
+                checkpoint = Some(item);
+            }
+            Some("function_call") if compact => bail!(invalid_compaction()),
             Some("function_call") => {
                 let id = item["call_id"].as_str().ok_or_else(invalid_response)?;
                 let name = item["name"].as_str().ok_or_else(invalid_response)?;
@@ -727,7 +754,10 @@ fn codex_output(response: Value) -> Result<Completion> {
                 for part in item["content"].as_array().ok_or_else(invalid_response)? {
                     match part["type"].as_str() {
                         Some("output_text") => {
-                            content.push_str(part["text"].as_str().ok_or_else(invalid_response)?);
+                            let text = part["text"].as_str().ok_or_else(invalid_response)?;
+                            if !compact {
+                                content.push_str(text);
+                            }
                         }
                         Some("refusal") => bail!(failure(
                             422,
@@ -746,6 +776,11 @@ fn codex_output(response: Value) -> Result<Completion> {
             )),
         }
     }
+    let items = if compact {
+        json!([checkpoint.ok_or_else(invalid_compaction)?])
+    } else {
+        response["output"].clone()
+    };
     Ok(Completion {
         content,
         calls,
@@ -755,7 +790,7 @@ fn codex_output(response: Value) -> Result<Completion> {
         output_tokens: response["usage"]["output_tokens"]
             .as_u64()
             .ok_or_else(invalid_response)?,
-        state: Some(json!({"format": "codex_responses", "items": response["output"]})),
+        state: Some(json!({"format": "codex_responses", "items": items})),
         cache_read: response["usage"]["input_tokens_details"]["cached_tokens"].as_u64(),
         cache_write: response["usage"]["input_tokens_details"]["cache_write_tokens"].as_u64(),
     })
@@ -964,6 +999,7 @@ mod tests {
                         CodexSse::default()
                             .feed(data.as_bytes())?
                             .ok_or_else(incomplete)?,
+                        false,
                     )
                 }
                 "openrouter" => {
@@ -1021,7 +1057,7 @@ mod tests {
             .chunks(3)
             .find_map(|chunk| decoder.feed(chunk).unwrap())
             .expect("complete stream");
-        let completion = codex_output(output).unwrap();
+        let completion = codex_output(output, false).unwrap();
         assert_eq!(completion.content, "valid 🌿");
         assert_eq!(completion.output_tokens, 3);
         assert!(
@@ -1142,6 +1178,49 @@ mod tests {
         assert_eq!(payload["store"], false);
     }
     #[test]
+    fn codex_compacts_explicitly_and_reuses_the_opaque_result() {
+        let request = json!({
+            "model": "gpt-6-luna",
+            "messages": [{"role": "user", "content": "Summarize this history."}],
+            "tool_choice": "required",
+            "compaction": true
+        });
+        let payload = codex_payload(&request).unwrap();
+        assert_eq!(
+            payload["input"].as_array().unwrap().last().unwrap(),
+            &json!({"type": "compaction_trigger"})
+        );
+        assert!(payload.get("tool_choice").is_none());
+
+        let item =
+            json!({"id": "cmp_test", "type": "compaction", "encrypted_content": "test-data"});
+        let response = json!({
+            "status": "completed",
+            "output": [item],
+            "usage": {"input_tokens": 5, "output_tokens": 1}
+        });
+        let result = codex_output(response.clone(), true).unwrap();
+        assert!(result.content.is_empty());
+        assert!(result.calls.is_empty());
+        let mut continuation = request;
+        continuation["compaction"] = json!(false);
+        continuation["messages"] = json!([
+            {"role": "assistant", "content": "", "continuation": {"state": result.state}},
+            {"role": "user", "content": "Continue this work."}
+        ]);
+        let continued = codex_payload(&continuation).unwrap();
+        assert_eq!(continued["input"][0], item);
+        assert_eq!(continued["input"].as_array().unwrap().len(), 2);
+        assert!(codex_output(response, false).is_err());
+        assert!(
+            codex_output(
+                json!({"status": "completed", "output": [], "usage": {"input_tokens": 5, "output_tokens": 0}}),
+                true
+            ).is_err()
+        );
+    }
+
+    #[test]
     fn codex_replays_the_original_ordered_output_before_tool_results() {
         let reasoning =
             json!({"type":"reasoning", "id":"rs_test", "encrypted_content":"opaque", "summary":[]});
@@ -1149,7 +1228,7 @@ mod tests {
         let completion = codex_output(json!({
             "status":"completed", "output":[reasoning, call],
             "usage":{"input_tokens":1200,"output_tokens":20,"input_tokens_details":{"cached_tokens":1024}},
-        })).unwrap();
+        }), false).unwrap();
         let payload = codex_payload(&json!({"model":"test", "messages":[
             {"role":"user","content":"Find the value"},
             {"role":"assistant","content":"","tool_calls":[{"type":"function","id":"call_test",
