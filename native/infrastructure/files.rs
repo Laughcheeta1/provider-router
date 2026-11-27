@@ -290,6 +290,7 @@ mod tests {
             message.content = Content::Parts(vec![
                 Part::Text {
                     text: "What is in it?".into(),
+                    prompt_cache_boundary: None,
                 },
                 Part::File {
                     file: Attachment::Reference {

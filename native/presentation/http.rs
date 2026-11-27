@@ -165,6 +165,7 @@ impl<B: InferenceBackend> Api<B> {
                     info["ready"] = json!(models > 0);
                     info["file_references"] = json!(self.0.can_reference_files(principal));
                     info["compaction"] = json!(true);
+                    info["prompt_cache_breakpoints"] = json!(true);
                     info["providers"] = json!(connections);
                     info["models"] = json!(models);
                     Ok(Json(info).into_response())
@@ -394,6 +395,7 @@ mod tests {
                     output_tokens: 1,
                     cached_input_tokens: None,
                     cache_write_tokens: None,
+                    duration_ms: None,
                 },
                 provider: "codex".into(),
                 method: "codex_http".into(),

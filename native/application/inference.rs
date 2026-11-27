@@ -200,6 +200,7 @@ impl<B: InferenceBackend> InferenceService<B> {
                         output_tokens: 0,
                         cached_input_tokens: None,
                         cache_write_tokens: None,
+                        duration_ms: None,
                     },
                     provider: connection.method.provider().into(),
                     method: method_name(connection),

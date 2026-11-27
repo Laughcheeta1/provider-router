@@ -153,7 +153,7 @@ pub(super) fn prepare(messages: Vec<Message>, model: &Model) -> Outcome<Vec<Mess
             }
             for part in &content {
                 match part {
-                    Part::Text { text } => text_bytes += text.len(),
+                    Part::Text { text, .. } => text_bytes += text.len(),
                     Part::ImageUrl { image_url } => {
                         if !vision {
                             return Err(unsupported_images());
@@ -245,7 +245,10 @@ fn read_text(bytes: &[u8]) -> Outcome<&str> {
     Ok(value)
 }
 fn text(text: String) -> Part {
-    Part::Text { text }
+    Part::Text {
+        text,
+        prompt_cache_boundary: None,
+    }
 }
 fn image(media_type: &str, bytes: &[u8]) -> Part {
     Part::ImageUrl {
@@ -329,7 +332,7 @@ mod tests {
             vec!["text".into()],
         );
         assert_eq!(messages.len(), 2);
-        let Part::Text { text } = &parts(&messages)[1] else {
+        let Part::Text { text, .. } = &parts(&messages)[1] else {
             panic!("expected CSV text")
         };
         assert_eq!(
@@ -346,7 +349,7 @@ mod tests {
             include_bytes!("../../tests/fixtures/attachment-workbook.xlsx"),
             vec!["text".into()],
         );
-        let Part::Text { text } = &parts(&messages)[1] else {
+        let Part::Text { text, .. } = &parts(&messages)[1] else {
             panic!("expected workbook text")
         };
         for line in [
@@ -384,7 +387,7 @@ mod tests {
         );
         let parts = parts(&messages);
         assert!(
-            matches!(&parts[1], Part::Text { text } if text.contains("Dispatch notes") && text.contains("North 125 MWh"))
+            matches!(&parts[1], Part::Text { text, .. } if text.contains("Dispatch notes") && text.contains("North 125 MWh"))
         );
         assert!(parts.iter().any(|part| matches!(part, Part::ImageUrl { image_url } if image_url.url.starts_with("data:image/png;base64,iVBOR"))));
     }
@@ -399,7 +402,7 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert!(matches!(
             &messages[1].content,
-            Content::Parts(parts) if matches!(parts.as_slice(), [Part::Text { text }] if text == "What does the document say?")
+            Content::Parts(parts) if matches!(parts.as_slice(), [Part::Text { text, .. }] if text == "What does the document say?")
         ));
         let parts = parts(&messages);
         assert_eq!(parts.len(), 2);

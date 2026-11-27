@@ -114,9 +114,17 @@ pub enum Content {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Part {
-    Text { text: String },
-    File { file: Attachment },
-    ImageUrl { image_url: Image },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_cache_boundary: Option<bool>,
+    },
+    File {
+        file: Attachment,
+    },
+    ImageUrl {
+        image_url: Image,
+    },
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(untagged, deny_unknown_fields)]
@@ -202,6 +210,8 @@ pub struct Usage {
     pub cached_input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<f64>,
 }
 impl Request {
     pub fn validate(&self, model: &Model) -> Outcome<()> {

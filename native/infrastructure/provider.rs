@@ -10,7 +10,11 @@ pub use discovery::discover;
 use reqwest::{Client, RequestBuilder, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, fmt, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    time::{Duration, Instant},
+};
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
 const CODEX_URL: &str = "https://chatgpt.com/backend-api/codex";
 const MAX_PROVIDER_BYTES: usize = 16 * 1024 * 1024;
@@ -81,10 +85,11 @@ pub async fn infer(
     key: Option<&str>,
     request: &Value,
 ) -> Result<Value> {
-    let output = match connection.method {
+    let (output, model_duration) = match connection.method {
         Method::Openrouter => {
             let key = openrouter_key(key)?;
             let payload = openrouter_payload(request)?;
+            let started = Instant::now();
             let response = send(
                 client
                     .post(format!("{OPENROUTER_URL}/chat/completions"))
@@ -94,6 +99,7 @@ pub async fn infer(
             )
             .await?;
             let completion = bounded_json::<Value>(response).await?;
+            let model_duration = started.elapsed();
             if let Some(error) = openrouter_body_error(&completion) {
                 bail!(upstream_body_failure(error));
             }
@@ -116,15 +122,18 @@ pub async fn infer(
                     output.state = None;
                 }
             }
-            output
+            (output, model_duration)
         }
         Method::Codex => {
             let payload = codex_payload(request)?;
+            let started = Instant::now();
             let response = codex_request(client, connection, "/responses", Some(&payload)).await?;
-            codex_output(
-                completed_response(response).await?,
-                request["compaction"] == true,
-            )?
+            let completed = completed_response(response).await?;
+            let model_duration = started.elapsed();
+            (
+                codex_output(completed, request["compaction"] == true)?,
+                model_duration,
+            )
         }
     };
     let mut result = json!({
@@ -132,7 +141,8 @@ pub async fn infer(
         "content": output.content,
         "tool_calls": output.calls,
         "usage": {"input_tokens": output.input_tokens, "output_tokens": output.output_tokens,
-                  "cached_input_tokens": output.cache_read, "cache_write_tokens": output.cache_write},
+                  "cached_input_tokens": output.cache_read, "cache_write_tokens": output.cache_write,
+                  "duration_ms": model_duration.as_secs_f64() * 1000.0},
         "provider": match connection.method {
             Method::Codex => "codex",
             Method::Openrouter => "openrouter",
@@ -218,11 +228,40 @@ fn openrouter_payload(request: &Value) -> Result<Value> {
     if let Some(id) = request.get("session_id") {
         payload["session_id"] = id.clone();
     }
-    if payload["model"]
+    let claude = payload["model"]
         .as_str()
-        .is_some_and(|model| model.starts_with("anthropic/"))
-    {
+        .is_some_and(|model| model.trim_start_matches('~').starts_with("anthropic/"));
+    if claude {
         payload["cache_control"] = json!({"type": "ephemeral"});
+    }
+    let mut remaining_breakpoints = 3; // Reserve one of Claude's four slots for automatic caching.
+    for message in payload["messages"].as_array_mut().into_iter().flatten() {
+        let eligible_role = matches!(
+            message["role"].as_str(),
+            Some("system" | "developer" | "user")
+        );
+        for part in message
+            .get_mut("content")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            let Some(block) = part.as_object_mut() else {
+                continue;
+            };
+            if block.remove("prompt_cache_boundary") == Some(Value::Bool(true))
+                && claude
+                && eligible_role
+                && remaining_breakpoints > 0
+                && block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty())
+            {
+                block.insert("cache_control".into(), json!({"type": "ephemeral"}));
+                remaining_breakpoints -= 1;
+            }
+        }
     }
     if request["tools"]
         .as_array()
@@ -1157,7 +1196,7 @@ mod tests {
         let request = json!({
             "model": "codex-test",
             "messages": [
-                {"role":"system","content":"instructions"},
+                {"role":"system","content":[{"type":"text","text":"instructions","prompt_cache_boundary":true}]},
                 {"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]},
                 {"role":"assistant","content":null,"tool_calls":[{"id":"call_test","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
                 {"role":"tool","tool_call_id":"call_test","content":"result"},
@@ -1168,6 +1207,11 @@ mod tests {
         let payload = codex_payload(&request).unwrap();
         assert_eq!(payload["input"][0]["role"], "developer");
         assert_eq!(
+            payload["input"][0]["content"],
+            json!([{"type":"input_text","text":"instructions"}])
+        );
+        assert!(payload.get("prompt_cache_options").is_none());
+        assert_eq!(
             payload["input"][1]["content"][0]["image_url"],
             "data:image/png;base64,AA=="
         );
@@ -1176,6 +1220,45 @@ mod tests {
         assert_eq!(payload["text"]["format"]["name"], "result");
         assert!(payload.get("max_output_tokens").is_none());
         assert_eq!(payload["store"], false);
+    }
+    #[test]
+    fn openrouter_marks_the_three_stable_claude_prefixes_and_keeps_automatic_caching() {
+        let mut request = json!({
+            "model":"anthropic/claude-sonnet-5",
+            "messages":[
+                {"role":"system","content":[
+                    {"type":"text","text":"Instructions","prompt_cache_boundary":true},
+                    {"type":"text","text":"Skills","prompt_cache_boundary":true}
+                ]},
+                {"role":"user","content":[{"type":"text","text":"Opening","prompt_cache_boundary":true}]},
+                {"role":"user","content":[{"type":"text","text":"Question","prompt_cache_boundary":true}]}
+            ]
+        });
+        let ephemeral = json!({"type":"ephemeral"});
+        let claude = openrouter_payload(&request).unwrap();
+        assert_eq!(claude["cache_control"], ephemeral);
+        assert_eq!(
+            claude["messages"][0]["content"][0]["cache_control"],
+            ephemeral
+        );
+        assert_eq!(
+            claude["messages"][0]["content"][1]["cache_control"],
+            ephemeral
+        );
+        assert_eq!(
+            claude["messages"][1]["content"][0]["cache_control"],
+            ephemeral
+        );
+        assert_eq!(
+            claude["messages"][2]["content"][0],
+            json!({"type":"text","text":"Question"})
+        );
+        assert!(!claude.to_string().contains("prompt_cache_boundary"));
+
+        request["model"] = json!("google/gemini-3.1-pro-preview");
+        let gemini = openrouter_payload(&request).unwrap().to_string();
+        assert!(!gemini.contains("cache_control"));
+        assert!(!gemini.contains("prompt_cache_boundary"));
     }
     #[test]
     fn codex_compacts_explicitly_and_reuses_the_opaque_result() {

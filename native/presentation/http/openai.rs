@@ -181,7 +181,10 @@ impl HistoryPart {
     fn into_part(self) -> Outcome<Part> {
         // Responses parts accept extension metadata while document sources are exclusive.
         match self {
-            Self::InputText { text } | Self::OutputText { text } => Ok(Part::Text { text }),
+            Self::InputText { text } | Self::OutputText { text } => Ok(Part::Text {
+                text,
+                prompt_cache_boundary: None,
+            }),
             Self::InputFile {
                 filename: Some(filename),
                 file_data: Some(file_data),
@@ -438,6 +441,9 @@ pub(super) fn response(input: &OpenAi, completion: &Completion) -> Response {
         "provider": completion.provider, "method": completion.method,
         "connection_id": input.request.connection_id, "model": completion.model,
     });
+    if let Some(duration) = completion.usage.duration_ms {
+        provenance["model_duration_ms"] = json!(duration);
+    }
     if let Some(effort) = &completion.reasoning_effort {
         provenance["reasoning_effort"] = json!(effort);
     }
@@ -709,6 +715,7 @@ mod tests {
                 output_tokens: 2,
                 cached_input_tokens: None,
                 cache_write_tokens: None,
+                duration_ms: None,
             },
             provider: "codex".into(),
             method: "codex_http".into(),
@@ -760,6 +767,7 @@ mod tests {
                     output_tokens: 1,
                     cached_input_tokens: None,
                     cache_write_tokens: None,
+                    duration_ms: None,
                 },
                 provider: "codex".into(),
                 method: "codex_http".into(),
@@ -829,6 +837,7 @@ mod tests {
                         output_tokens: 1,
                         cached_input_tokens: None,
                         cache_write_tokens: None,
+                        duration_ms: None,
                     },
                     provider: "codex".into(),
                     method: "codex_http".into(),
@@ -965,8 +974,9 @@ mod tests {
             usage: Usage {
                 input_tokens: 10,
                 output_tokens: 2,
-                cached_input_tokens: None,
-                cache_write_tokens: None,
+                cached_input_tokens: Some(0),
+                cache_write_tokens: Some(4),
+                duration_ms: Some(125.25),
             },
             provider: "codex".into(),
             method: "codex_http".into(),
@@ -995,6 +1005,12 @@ mod tests {
         assert_eq!(finish["status"], "completed");
         assert_eq!(finish["output"][0]["call_id"], "new-call");
         assert_eq!(finish["usage"]["total_tokens"], 12);
+        assert_eq!(finish["usage"]["input_tokens_details"]["cached_tokens"], 0);
+        assert_eq!(
+            finish["usage"]["input_tokens_details"]["cache_write_tokens"],
+            4
+        );
+        assert_eq!(finish["provider_router"]["model_duration_ms"], 125.25);
         Ok(())
     }
 
@@ -1021,6 +1037,7 @@ mod tests {
                 output_tokens: 1,
                 cached_input_tokens: None,
                 cache_write_tokens: None,
+                duration_ms: None,
             },
             provider: "codex".into(),
             method: "codex_http".into(),

@@ -158,9 +158,11 @@ The Router's inference deadline returns HTTP 504 with `error.code` set to `ROUTE
 
 The versioned extension `POST /v1/inference` accepts an explicit UUIDv7 request and connection ID and returns the normalized completion contract. The standard OpenAI endpoints above work with ordinary SDK clients.
 
-The native response can include `continuation` with its `connection_id`, selected `model` and provider-owned `state`. Add that complete object to the corresponding assistant message on the next request, followed by any matching tool results. Codex state contains the ordered Responses items. OpenRouter state contains its assistant message and resolved upstream route. An optional UUIDv7 `session_id` groups related requests for the provider's cache routing. Usage includes `cached_input_tokens` and `cache_write_tokens` when the provider reports them as unsigned 64-bit JSON integers.
+The native response can include `continuation` with its `connection_id`, selected `model` and provider-owned `state`. Add that complete object to the corresponding assistant message on the next request, followed by any matching tool results. Codex state contains the ordered Responses items. OpenRouter state contains its assistant message and resolved upstream route. An optional UUIDv7 `session_id` groups related requests for the provider's cache routing. Usage includes `cached_input_tokens` and `cache_write_tokens` when the provider reports them. Native inference includes the measured upstream request time in `usage.duration_ms`. OpenAI-compatible responses expose the same measurement in `provider_router.model_duration_ms`.
 
 Non-streaming `POST /v1/responses` also returns the continuation under `provider_router.continuation`. An application using this extension can send the complete normalized history as `provider_router_messages` alongside its stateless Responses input.
+
+When `GET /v1/connectivity` advertises `prompt_cache_breakpoints: true`, normalized text blocks in either inference extension may include `prompt_cache_boundary: true`. Router uses the first three eligible marked blocks on OpenRouter Claude with the default five-minute lifetime and automatic caching. Codex and other OpenRouter models receive their ordinary text blocks without these annotations.
 
 ## Codex Responses compaction
 
